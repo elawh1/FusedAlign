@@ -3,13 +3,44 @@
 #include <cinttypes>   
 #include <iostream>
 #include <vector>
-#include <mat.h>
+#include <cassert>
+// #include <mat.h>  
 #include <cmath>
 #include <algorithm>
 #include <fstream>
 #include <chrono>
 #include <mkl_vml.h>
 // #include <mkl_vml_functions.h>
+
+std::vector<double> sparse_to_dense_colmajor(sparse_matrix_t A, MKL_INT nrows, MKL_INT ncols) {
+    // Output: column-major dense matrix
+    std::vector<double> dense(nrows * ncols, 0.0);
+
+    // Export CSR data
+    sparse_index_base_t indexing;
+    MKL_INT rows, cols;
+    MKL_INT *row_start = nullptr, *row_end = nullptr;
+    MKL_INT *col_indx = nullptr;
+    double *values = nullptr;
+
+    sparse_status_t st = mkl_sparse_d_export_csr( A, &indexing, &rows, &cols, &row_start, &row_end, &col_indx, &values);
+    if (st != SPARSE_STATUS_SUCCESS)
+        throw std::runtime_error("mkl_sparse_d_export_csr failed");
+    if (rows != nrows || cols != ncols)
+        throw std::runtime_error("dimension mismatch in sparse_to_dense");
+
+    const MKL_INT base = (indexing == SPARSE_INDEX_BASE_ZERO) ? 0 : 1;
+
+    // Fill dense (column-major)
+    for (MKL_INT i = 0; i < nrows; ++i) {
+        for (MKL_INT k = row_start[i] - base; k < row_end[i] - base; ++k) {
+            MKL_INT j = col_indx[k] - base;
+            dense[i + j * nrows] = values[k];   // column-major indexing
+        }
+    }
+
+    return dense;
+}
 
 
 void print_sparse_matrix_info(sparse_matrix_t A, const char* name = "matrix") {
@@ -93,6 +124,49 @@ sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int 
     mkl_sparse_destroy(A);
 
     return A_csr;
+}
+
+void compare( const std::vector<double>& cpp_vec, const std::string& filename, const std::string& label) {
+    std::ifstream fin(filename);
+    if (!fin.is_open()) {
+        std::cerr << "Error: cannot open file " << filename << "\n";
+        return;
+    }
+
+    // read python values
+    std::vector<double> py_vec(cpp_vec.size());
+    for (size_t i = 0; i < py_vec.size() && fin; ++i) {
+        fin >> py_vec[i];
+    }
+
+    double max_abs = 0.0;
+    double max_rel = 0.0;
+    double a_err = 0.0, b_err = 0.0;
+    int counter = 0;
+    int counter_1 = 0;
+    for (size_t i = 0; i < cpp_vec.size(); ++i) {
+        double a = py_vec[i];
+        double b = cpp_vec[i];
+        double da = std::abs(a - b);
+
+        if (da > max_abs) {
+            max_abs = da;
+            a_err = a;
+            b_err = b;
+        }
+
+        double denom = std::max({std::abs(a), std::abs(b), 1e-12});
+        // if (da > (denom * 0.1)) std::cout << label << " more than 10 percent error-> cpp: " << b_err << "  python: " << a_err << "\n";
+        if (da > (denom * 0.1)) counter++;
+        if (da > (denom * 0.01)) counter_1++;
+        double rel = da / denom;
+        if (rel > max_rel) max_rel = rel;
+    
+    }
+    std::cout << label << " out of " << cpp_vec.size() << " elements " << counter << " elements has more than 10 percent error" << std::endl;
+    std::cout << label << " out of " << cpp_vec.size() << " elements " << counter_1 << " elements has more than 1 percent error" << std::endl;
+    std::cout << label << " max_abs = " << max_abs << "  max_rel = " << max_rel
+              << "  cpp: " << b_err << "  python: " << a_err << "\n";
 }
 
 sparse_matrix_t make_coo_from_vec(const std::vector<double>& vec, int m, int n) {
@@ -290,27 +364,12 @@ std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
 
     sparse_status_t status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph, descr, all_ones.data(), (double) 1.0, graph_row_sum.data());
-    // if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed");
-    if (status != SPARSE_STATUS_SUCCESS) {
-        switch (status) {
-            case SPARSE_STATUS_NOT_INITIALIZED:
-                std::cerr << "MKL Error: The routine was not initialized." << std::endl;
-                break;
-            case SPARSE_STATUS_ALLOC_FAILED:
-                std::cerr << "MKL Error: Memory allocation failed." << std::endl;
-                break;
-            default:
-                std::cerr << "MKL Error: An unknown error occurred with status code " << status << std::endl;
-                break;
-        }
-    } 
+    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
+
     // -----    TODO   -----  Connect isolated nodes
     
-    //
     MKLCSC Dinv = make_diag_csc(graph_row_sum, n, n, true);
-    mkl_verbose(1);
-    sparse_matrix_t graph_norm = nullptr;
-    
+    sparse_matrix_t graph_norm = nullptr;    
     mkl_sparse_optimize(Dinv.spMat);
     mkl_sparse_optimize(graph);
     status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Dinv.spMat, graph, &graph_norm);
@@ -352,31 +411,11 @@ std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL
         if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
         cblas_daxpy(n * l, restart_prob, E.data(), 1, Xnext_vals.data(), 1);
 
-        // for (int j=0;j<l;++j){
-        //     double s=0.0; for (int i2=0;i2<n;++i2) s += Xnext_vals[i2 + j*n];
-        //     double mx=0; for(int i2=0;i2<n;++i2) mx = std::max(mx, X_vals[i2 + j*n]);
-        //     if (std::abs(s-1.0) > 1e-10) printf("col %d    sum after +alpha*E = %.17g    max=%.3f \n", j, s, mx);
-        // }
-
         std::swap(X_vals, Xnext_vals);
-
-        // printf("rwr \n");
-        // int cnt = 0;
-        // for(int i=0; i < X_vals.size(); i++) {
-        //     if (X_vals[i] > 0.2)    cnt++;
-        // }
-        // printf("total %d up threashod %d\n", X_vals.size(), cnt);
-
     }
     //column major dense matrix nxl
 	return Xnext_vals;
 }
-
-int get_transport_cost() {
-
-	return 1;	
-}
-
 
 
 void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> anchors, double val)
@@ -535,10 +574,28 @@ bool has_nan_or_inf(const std::vector<double>& v) {
     return false;
 }
 
+double getMax(const std::vector<double>& v) {
+    double max = v[0];
+    for(int i=1; i<v.size(); i++) {
+        if (v[i] > max )     max = v[i];
+    }
+    return max;
+}
+
+double getMin(const std::vector<double>& v) {
+    double min = v[0];
+    for(int i=1; i<v.size(); i++) {
+        if ( v[i] < min ) min = v[i];
+    }
+    return min;
+}
+
+
 
 // H_in: n1 x n2, row-major
 std::vector<double> mina(const std::vector<double>& H_in, int n1, int n2, double epsilon)
 {
+    
     // const int N = n1 * n2;
     std::vector<double> H(n1 * n2);
     cblas_dcopy(n1 * n2, H_in.data(), 1, H.data(), 1);        // H = H_in
@@ -549,7 +606,7 @@ std::vector<double> mina(const std::vector<double>& H_in, int n1, int n2, double
     
     // H = exp(H)
     vdExp(n1 * n2, H.data(), H.data());
-    
+    if(has_nan_or_inf(H))   { printf("H inside mina after exp has inf or nan\n");}
     // in_a = ones(n1) / n1
     std::vector<double> in_a(n1, 1.0 / static_cast<double>(n1));
 
@@ -559,7 +616,7 @@ std::vector<double> mina(const std::vector<double>& H_in, int n1, int n2, double
     
     // s = -epsilon * log(s)
     vdLn(n2, s.data(), s.data());
-    
+    if(has_nan_or_inf(H))   { printf("H inside mina after ln has inf or nan\n");}
     cblas_dscal(n2, -epsilon, s.data(), 1);
     
     return s;  // shape: (1 x n2)
@@ -720,7 +777,7 @@ std::vector<double> compute_L_fixed( const std::vector<double>& intra_dist1, con
 
 
 
-std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, int n1, int n2,
+std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, int n1, int n2,
     std::vector<double> cross_dist, std::vector<double> intra_dist1, std::vector<double> intra_dist2, int inner_iters, int outer_iters,
     double lambda_n, double lambda_a, double lambda_p, double lambda_e_in, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs, 
     const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, std::vector<double> anchors_test)
@@ -728,33 +785,37 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t 
     sparse_matrix_t row_norm_adj1 = row_normalize_graph(graph1_py, n1);
     sparse_matrix_t row_norm_adj2 = row_normalize_graph(graph2_py, n2);
 
+
+    std::vector<double> adj1_dense = sparse_to_dense_colmajor(row_norm_adj1, n1, n1);
+    std::vector<double> adj2_dense = sparse_to_dense_colmajor(row_norm_adj2, n2, n2);
+    compare(adj1_dense, data_path + "/row_norm_adj1.txt", "row_norm_adj1");
+    compare(adj2_dense, data_path + "/row_norm_adj2.txt", "row_norm_adj2");
+
     double lambda_total = lambda_n + lambda_a + lambda_p;
     double lambda_e = lambda_e_in * n1 * n2;
-
+    printf("max intra_dist1 %.6f  min intra_dist1 %.6f \n ", getMax(intra_dist1), getMin(intra_dist1));
+    printf("max intra_dist2 %.6f  min intra_dist2 %.6f \n ", getMax(intra_dist2), getMin(intra_dist2));
     std::vector<double> one_vec_n1(n1, 1.0);
     std::vector<double> one_vec_n2(n2, 1.0);
     
-    // a = one_vec_n1 / n1, r = one_vec_n1 / n1
     std::vector<double> a  = one_vec_n1;
     std::vector<double> r  = one_vec_n1;
     cblas_dscal(n1, 1.0 / static_cast<double>(n1), a.data(), 1);
     cblas_dscal(n1, 1.0 / static_cast<double>(n1), r.data(), 1);
-    // b = one_vec_n2^T / n2, c = one_vec_n2^T / Before exp: n2
     std::vector<double> b  = one_vec_n2;
     std::vector<double> c  = one_vec_n2;
     cblas_dscal(n2, 1.0 / static_cast<double>(n2), b.data(), 1);
     cblas_dscal(n2, 1.0 / static_cast<double>(n2), c.data(), 1);
     std::vector<double> S(n1 * n2, 1.0 / static_cast<double>(n1 * n2));      // S = (1/(n1*n2)) * 1_n1 * 1_n2^T
-    // std::vector<double> S (n1 * n2);
-    // cblas_dger(CblasColMajor, n1, n2, 1.0 / static_cast<double>(n1 * n2), one_vec_n1.data(), 1, one_vec_n2.data(), 1, S.data(), n1);
 
     std::vector<double> H(n1 * n2, 1e-6);
-    // cblas_dcopy(n1 * n2, S.data(), 1, H.data(), 1);           // H = S (all ones / (n1*n2))
-    // cblas_dscal(n1 * n2, 1e-6 * n1 * n2, H.data(), 1);        // H = 1e-6
-    // anchor_cost_zero(H, n1, n2, anchor_pairs, 1.0);
     init_H_with_anchors(H, n1, n2, anchor_pairs);
 
+    printf("max intra_dist1 %.6f  min intra_dist1 %.6f \n ", getMax(intra_dist1), getMin(intra_dist1));
+    printf("max intra_dist2 %.6f  min intra_dist2 %.6f \n ", getMax(intra_dist2), getMin(intra_dist2));
     std::vector<double> L_fixed = compute_L_fixed(intra_dist1, intra_dist2, r, c, one_vec_n1, one_vec_n2, n1, n2);
+    printf(" \n max L_fixed %.6f   min L_fixedL %.6f \n ", getMax(L_fixed), getMin(L_fixed));
+    compare(L_fixed, data_path + "/L_fixed.txt.txt", "L_fixed");
     std::vector<double> S_old(n1*n2);
     std::vector<double> A_S(n1*n2);
     std::vector<double> A2T_term(n1*n2);
@@ -770,14 +831,11 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t 
     std::vector<double> A1T_S_T(n2 * n1);
     std::vector<double> A2_A1T_S_T(n2 * n1);
     std::vector<double> RW_term(n1*n2);
-    // std::vector<double> a_row(n2);   
-    // std::vector<double> b_col(n1);
-    std::vector<double> b_row = one_vec_n2;          // length n2, (1 x n2)
-    cblas_dscal(n2, 1.0 / double(n2), b_row.data(), 1);
-    std::vector<double> b_col(n1);                   // length n1, (n1 x 1)
+    
+
     std::vector<double> tmp_n1n2(n1*n2);
     std::vector<double> tmp_n1n2_2(n1*n2);
-    std::vector<double> tmp_n2n1(n1 * n2);
+    std::vector<double> tmp_n2n1(n1*n2);
 
     matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     std::vector<double> H_log = H;
@@ -795,9 +853,10 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t 
         // A2T_term = A_S @ intra_dist2^T   (n1 x n2) @ (n2 x n2) = (n1 x n2)
         cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, n2, 1.0, A_S.data(), n1, intra_dist2.data(), n2, 0.0, A2T_term.data(), n1);           //col major
         // L = L_fixed - 2 * A2T_term
-        
         cblas_dcopy(n1 * n2, L_fixed.data(), 1, L.data(), 1);
         cblas_daxpy(n1 * n2, -2.0, A2T_term.data(), 1, L.data(), 1);
+        printf("\n outer iter %d max L %.6f  min L %.6f \n ", it, getMax(L), getMin(L));
+        compare(L, data_path + "/L_outer_iter_" + std::to_string(it) + ".txt", "L_iter_"+ std::to_string(it));
         // ---- C = cross_dist + lambda_e * L - lambda_n * log(row_norm_adj1.T @ S @ row_norm_adj2) - lambda_a * log(H) ----
         // Start from cross_dist
         cblas_dcopy(n1 * n2, cross_dist.data(), 1, C.data(), 1);
@@ -808,21 +867,30 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t 
         // Compute RW_term = row_norm_adj1.T @ S @ row_norm_adj2 (n1 x n2)
         // A1T_S = row_norm_adj1.T @ S
         // op(A) = TRANSPOSE, A: n1 x n1, S: n1 x n2 -> A1T_S: n1 x n2
-        // sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_ROW_MAJOR, S.data(), n2, n2, 0.0, A1T_S.data(),n2);
-        sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, S.data(), n2, n1, 0.0, A1T_S.data(), n1);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A1^T S) failed");
+        // sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, S.data(), n2, n1, 0.0, A1T_S.data(), n1);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A1^T S) failed");
+        cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, n1, n2, n1, 1.0, adj1_dense.data(), n1, S.data(), n1, 0.0, A1T_S.data(), n1);
 
         // A1T_S_T = (A1T_S)^T (n2 x n1)
-        // mkl_domatcopy('R', 'T', n1, n2, 1.0, A1T_S.data(), n2, A1T_S_T.data(), n1);  //row major
         mkl_domatcopy('C', 'T', n1, n2, 1.0, A1T_S.data(), n1, A1T_S_T.data(), n2);    //col major
 
         // st = mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_ROW_MAJOR, A1T_S_T.data(), n1, n1, 0.0, A2_A1T_S_T.data(), n1);  //row major
-        st = mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_COLUMN_MAJOR, A1T_S_T.data(), n1, n2, 0.0, A2_A1T_S_T.data(), n2);     // col major
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A2 A1^T S^T) failed");
+        // st = mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_COLUMN_MAJOR, A1T_S_T.data(), n1, n2, 0.0, A2_A1T_S_T.data(), n2);     // col major
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A2 A1^T S^T) failed");
+        cblas_dgemm( CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n2, 1.0, A1T_S.data(), n1, adj2_dense.data(), n2, 0.0, RW_term.data(), n1);
 
         // RW_term = (A2_A1T_S_T)^T  (n1 x n2)
-        // mkl_domatcopy('R', 'T', n2, n1, 1.0, A2_A1T_S_T.data(), n1, RW_term.data(), n2);
-        mkl_domatcopy('C', 'T', n2, n1, 1.0, A2_A1T_S_T.data(), n2, RW_term.data(), n1);
+        // mkl_domatcopy('C', 'T', n2, n1, 1.0, A2_A1T_S_T.data(), n2, RW_term.data(), n1);
+        
+        double mn = RW_term[0], mx = RW_term[0];
+        int num_le0 = 0;
+        for (int i = 0; i < n1*n2; ++i) {
+            mn = std::min(mn, RW_term[i]);
+            mx = std::max(mx, RW_term[i]);
+            if (RW_term[i] <= 0.0) num_le0++;
+        }
+        std::cerr << "RW_term prelog min=" << mn << " max=" << mx
+                << " count<=0=" << num_le0 << "\n";
 
         // log(RW_term)
         vdLn(n1*n2, RW_term.data(), RW_term.data());
@@ -846,6 +914,9 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t 
             }
         }
 
+        printf("outer iter %d max C %.6f  min C %.6f \n ", it, getMax(C), getMin(C));
+        compare(C, data_path + "/C_outer_iter_" + std::to_string(it) + ".txt", "C_iter_"+ std::to_string(it));
+
         // ---- Cost = C - lambda_p * log(S) ----
         cblas_dcopy(n1*n2, S.data(), 1, S_log.data(), 1);
         vdLn(n1*n2, S_log.data(), S_log.data());
@@ -868,64 +939,94 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t 
                 std::cout << "NaN appeared in S at outer iter " << it << "\n";
 
         }
+
+        if (has_nan_or_inf(Cost))  {  printf(" outer iter %d Cost has nan or inf\n", it); }
+        // std::vector<double> a_row(n1, 1.0 / n1); 
+        // std::vector<double> b_col(n2, 1.0 / n2);   
+        std::vector<double> a_row(n2); 
+        std::vector<double> b_col(n1); 
         // ---- Sinkhorn inner iterations ----
         for (int j = 0; j < inner_iters; ++j) {
+            printf(" \n ---- outer iter %d --- inner iter %d --- \n", it, j);
             // Cost - b  (b is n1 x 1, broadcast over columns)
-            // B_mat = b_col * 1_n2^T (n1 x n2)
-            // cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), 1, one_vec_n2.data(), n2, 0.0, B_mat.data(), n2);
-            // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
-            if(j == 0)  cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, b_row.data(), 1, 0.0, B_mat.data(), n1);
-            else    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
+            if(j == 0) {
+                // std::vector<double> b_row(n2, 1.0 / n2);
+                // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, b_row.data(), 1, 0.0, B_mat.data(), n1);
+                std::vector<double> B_mat(n1*n2, 1.0 / n2);
+            }
+            else {
+                // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
+                cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
+            }
 
             // tmp_n1n2 = Cost - B_mat
-            // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, Cost.data(), n2, -1.0, B_mat.data(), n2, tmp_n1n2.data(), n2);
             mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, B_mat.data(), n1, tmp_n1n2.data(), n1);
+            
+            if (has_nan_or_inf(tmp_n1n2))  {  printf(" outer iter %d  inner iter %d tmp_n1n2 input to minaa has nan or inf\n", it, j); }
 
-            // a_row = minaa(tmp_n1n2, lambda_total)  (length n2)
-            a = minaa(tmp_n1n2, n1, n2, lambda_total);
+            a_row = minaa(tmp_n1n2, n1, n2, lambda_total);
            
             // Cost - a  (a is 1 x n2, broadcast over rows)
             // A_mat = 1_n1 * a_row^T (n1 x n2)
-            // cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), 1, a_row.data(), n2, 0.0, A_mat.data(), n2);
-            cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a_row.data(), 1, 0.0, A_mat.data(), n1);
+            // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a_row.data(), 1, 0.0, A_mat.data(), n1);
+            cblas_dgemm( CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a_row.data(), 1, 0.0, A_mat.data(), n1); 
 
             // tmp_n1n2 = Cost - A_mat
-            // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, Cost.data(), n2, -1.0, A_mat.data(), n2, tmp_n1n2.data(), n2);
             mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, A_mat.data(), n1, tmp_n1n2.data(), n1);
+
+            if (has_nan_or_inf(tmp_n1n2))  {  printf(" outer iter %d  inner iter %d tmp_n1n2 input to minbb has nan or inf\n", it, j); }
 
             // b_col = minbb(tmp_n1n2, lambda_total)  (length n1)
             b_col = minbb(tmp_n1n2, n1, n2, lambda_total, j);
         }
 
+        printf("outer iter %d max a_row %.6f  min a_row %.6f --- and max b_col %.6f  min b_col %.6f \n ", it, getMax(a_row), getMin(a_row), getMax(b_col), getMin(b_col));
+        compare(a_row, data_path + "/a_outer_iter_" + std::to_string(it) + ".txt", "a_iter_"+ std::to_string(it));
+        compare(b_col, data_path + "/b_outer_iter_" + std::to_string(it) + ".txt", "b_iter_"+ std::to_string(it));
 
         // ---- S = 0.05 * S_old + 0.95 * r * exp((a + b - Cost)/lambda_total) * c ----
-
         // A_mat = 1_n1 * a_row^T
-        // cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), 1, a_row.data(), n2, 0.0, A_mat.data(), n2);
-        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a.data(), 1, 0.0, A_mat.data(), n1);
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a_row.data(), 1, 0.0, A_mat.data(), n1);
         // B_mat = b_col * 1_n2^T
-        // cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), 1, one_vec_n2.data(), n2, 0.0, B_mat.data(), n2);
         cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
         // tmp_n1n2 = A_mat + B_mat
-        // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, A_mat.data(), n2, 1.0, B_mat.data(), n2, tmp_n1n2.data(), n2);
-     
         mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, A_mat.data(), n1, 1.0, B_mat.data(), n1, tmp_n1n2.data(), n1);
 
         // tmp_n1n2 = tmp_n1n2 - Cost
-        // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, tmp_n1n2.data(), n2, -1.0, Cost.data(), n2, tmp_n1n2.data(), n2);
         mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, tmp_n1n2.data(), n1, -1.0, Cost.data(), n1, tmp_n1n2.data(), n1);
    
-        // tmp_n1n2 = tmp_n1n2 / lambda_total
+        printf("outer iter %d max a+b-cost %.6f  min a+b-cost %.6f  lambda_total  is %.6f\n ", it, getMax(tmp_n1n2), getMin(tmp_n1n2), lambda_total);
+
+        // tmp_n1n2 = tmp_n1n2 / lambda_total   
         cblas_dscal(n1*n2, 1.0 / lambda_total, tmp_n1n2.data(), 1);
+
+        printf("outer iter %d max (a+b-cost) / lambda_total %.6f  min (a+b-cost) / lambda_total %.6f\n ", it, getMax(tmp_n1n2), getMin(tmp_n1n2));
+
+        //------- This is inserted to fix C zero problem -----  //
+        // Find max over tmp_n1n2 (the exponent)
+        // double maxtmp = tmp_n1n2[0];
+        // for (int i = 1; i < n1*n2; ++i) {
+        //     if (tmp_n1n2[i] > maxtmp) maxtmp = tmp_n1n2[i];
+        // }
+        // // Shift so the largest exponent is 0 (others ≤ 0)
+        // for (int i = 0; i < n1*n2; ++i) {
+        //     tmp_n1n2[i] -= maxtmp;
+        // }
+        // // 3) Optional clipping to avoid very negative tails
+        // const double cutoff = -50.0;
+        // for (int i = 0; i < n1*n2; ++i) {
+        //     if (tmp_n1n2[i] < cutoff) tmp_n1n2[i] = cutoff;
+        // }
+
+        //------- This is inserted to fix C zero problem -----  //
+
 
         // tmp_n1n2 = exp(tmp_n1n2)
         vdExp(n1*n2, tmp_n1n2.data(), tmp_n1n2.data());
 
         // RC_mat = r * 1_n2^T
-        // cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, r.data(), 1, one_vec_n2.data(), n2, 0.0, RC_mat.data(), n2);
         cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, r.data(), n1, one_vec_n2.data(), 1, 0.0, RC_mat.data(), n1);
         // C_mat = 1_n1 * c^T
-        // cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), 1, c.data(), n2, 0.0, C_mat.data(), n2);
         cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, c.data(), 1, 0.0, C_mat.data(), n1);
     
         // tmp_n1n2 = tmp_n1n2 ⊙ RC_mat
@@ -934,12 +1035,31 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t graph1_py, sparse_matrix_t 
         // tmp_n1n2 = tmp_n1n2 ⊙ C_mat
         vdMul(n1*n2, tmp_n1n2.data(), C_mat.data(), tmp_n1n2.data());
       
+        // double minCost = tmp_n1n2[0], maxCost = tmp_n1n2[0];
+        // for (int i = 1; i < n1*n2; ++i) {
+        //     if (tmp_n1n2[i] < minCost) minCost = tmp_n1n2[i];
+        //     if (tmp_n1n2[i] > maxCost) maxCost = tmp_n1n2[i];
+        // }
+
+        // double minX = 1e9, maxX = -1e9;
+        // for (int i = 0; i < n1*n2; ++i) {
+        //     double x = (A_mat[i] + B_mat[i] - Cost[i]) / lambda_total;  // same as your tmp before exp
+        //     if (x < minX) minX = x;
+        //     if (x > maxX) maxX = x;
+        // }
+        // std::cerr << "outer " << it 
+        //         << "  Cost range: [" << minCost << ", " << maxCost << "]"
+        //         << "  X range: [" << minX << ", " << maxX << "]\n";
+
+        printf("outer iter %d max bigger S %.6f  min bigger S %.6f\n ", it, getMax(tmp_n1n2), getMin(tmp_n1n2));
+
+
         // S = 0.95 * tmp_n1n2 + 0.05 * S_old
         cblas_dcopy(n1*n2, tmp_n1n2.data(), 1, S.data(), 1);
         cblas_dscal(n1*n2, 0.95, S.data(), 1);
         cblas_daxpy(n1*n2, 0.05, S_old.data(), 1, S.data(), 1);
+        printf("outer iter %d total S %.6f  min total S %.6f\n ", it, getMax(S), getMin(S));
         // diff_S = sum |S - S_old|
-        // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, S.data(), n2, -1.0, S_old.data(), n2, diff.data(), n2);
         mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, S.data(), n1, -1.0, S_old.data(), n1, diff.data(), n1);
         vdAbs(n1*n2, diff.data(), diff_abs.data());
         double diff_S = cblas_dasum(n1*n2, diff_abs.data(), 1);
