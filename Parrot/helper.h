@@ -1,4 +1,7 @@
+#ifdef MKL_AVAILABLE
 #include <mkl.h>
+#include <mkl_vml.h>
+#endif
 #include <cstdio>
 #include <cinttypes>   
 #include <iostream>
@@ -8,7 +11,6 @@
 #include <algorithm>
 #include <fstream>
 #include <chrono>
-#include <mkl_vml.h>
 #include <unordered_map>
 #include <numeric>
 
@@ -164,14 +166,14 @@ void compare( const std::vector<double>& cpp_vec, const std::string& filename, c
 
 sparse_matrix_t make_coo_from_vec(const std::vector<double>& vec, int m, int n) {
 	MKL_INT nnz = 0;
-	for(int i=0; i<vec.size(); i++) {
+	for(size_t i=0; i<vec.size(); i++) {
 		if(vec[i] != 0)
 			nnz++;
 	}
 	std::vector<MKL_INT> rows(nnz), cols(nnz);
 	std::vector<double> vals(nnz);
 	int k = 0;
-	for(int i=0; i<vec.size(); i++) {
+	for(size_t i=0; i<vec.size(); i++) {
         if(vec[i] != 0){
 			vals[k] = vec[i];
 			rows[k] = i % m;
@@ -188,7 +190,7 @@ sparse_matrix_t make_coo_from_vec(const std::vector<double>& vec, int m, int n) 
 
 MKLCSC make_csc_from_vec(const std::vector<double>& vec, MKL_INT m, MKL_INT n) {
 	MKL_INT nnz = 0;
-	for(int i=0; i<vec.size(); i++) {
+	for(size_t i=0; i<vec.size(); i++) {
 		if(vec[i] != 0)
 			nnz++;
 	}
@@ -292,7 +294,7 @@ std::vector<double> get_normalized_neg_exp_dist (std::vector<double>  rwr1, std:
 std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vector<double>& H_vec) {
     std::vector<MKL_INT> anchor_g1;
     std::vector<MKL_INT> anchor_g2;
-    for(int i=0; i< H_vec.size()/2; i++) {
+    for(size_t i=0; i< H_vec.size()/2; i++) {
         anchor_g1.push_back((MKL_INT) H_vec[i*2]);
         anchor_g2.push_back((MKL_INT) H_vec[i*2+1]);
     }
@@ -362,7 +364,7 @@ std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL
 
 
 void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> anchors, double val) {
-    printf("intpu vec size %d  anchors pair size %d\n ", A.size(), anchors.first.size());
+    // printf("intpu vec size %d  anchors pair size %d\n ", A.size(), anchors.first.size());
     const MKL_INT k = (MKL_INT) anchors.first.size();
     std::vector<MKL_INT> idx(k);
     for (MKL_INT t = 0; t < k; ++t) {
@@ -505,7 +507,7 @@ bool has_nan_or_inf(const std::vector<double>& v) {
 
 double getMax(const std::vector<double>& v) {
     double max = v[0];
-    for(int i=1; i<v.size(); i++) {
+    for(size_t i=1; i<v.size(); i++) {
         if (v[i] > max )     max = v[i];
     }
     return max;
@@ -513,7 +515,7 @@ double getMax(const std::vector<double>& v) {
 
 double getMin(const std::vector<double>& v) {
     double min = v[0];
-    for(int i=1; i<v.size(); i++) {
+    for(size_t i=1; i<v.size(); i++) {
         if ( v[i] < min ) min = v[i];
     }
     return min;
@@ -712,13 +714,10 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
     std::vector<double> A1T_S_T(n2 * n1);
     std::vector<double> A2_A1T_S_T(n2 * n1);
     std::vector<double> RW_term(n1*n2);
-    
-
     std::vector<double> tmp_n1n2(n1*n2);
     std::vector<double> tmp_n1n2_2(n1*n2);
     std::vector<double> tmp_n2n1(n1*n2);
 
-    matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     std::vector<double> H_log = H;
     vdLn(n1 * n2, H_log.data(), H_log.data());
 
@@ -747,6 +746,7 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         // Compute RW_term = row_norm_adj1.T @ S @ row_norm_adj2 (n1 x n2)
         // A1T_S = row_norm_adj1.T @ S
         // op(A) = TRANSPOSE, A: n1 x n1, S: n1 x n2 -> A1T_S: n1 x n2
+        // matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
         // sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, S.data(), n2, n1, 0.0, A1T_S.data(), n1);
         // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A1^T S) failed");
         cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, n1, n2, n1, 1.0, adj1_dense.data(), n1, S.data(), n1, 0.0, A1T_S.data(), n1);
@@ -891,10 +891,7 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
 // ks: e.g. {1, 10, 30, 50}
 std::unordered_map<int, double> hits_ks_ltr_scores( const std::vector<double>& S, int n1, int n2, 
     const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, const std::vector<int>& ks) {
-
-    const auto& left_ids  = anchor_pairs_test.first;
-    const auto& right_ids = anchor_pairs_test.second;
-    const int num_tests = left_ids.size();
+    const int num_tests = anchor_pairs_test.first.size();
     std::unordered_map<int, int> hit_counts;
     std::unordered_map<int, double> hits_ks;
     for (int k : ks) hit_counts[k] = 0;

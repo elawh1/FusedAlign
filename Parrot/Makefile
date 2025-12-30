@@ -1,19 +1,28 @@
-CXX = icpc
-# CXX = mpic++
-CXXFLAGS = -O2 -qmkl
-# MATLAB_INC = $(MATLABROOT)/extern/include
-# MATLAB_LIB = $(MATLABROOT)/bin/glnxa64
+CXX ?= g++
+CXXFLAGS = -O3 -std=c++17 -Wall
 
-parrot: parrot.cpp helper.h
-	$(CXX) $(CXXFLAGS) parrot.cpp -o parrot \
-		# -I$(MATLAB_INC) \
-		# -L$(MATLAB_LIB) -Wl,-rpath,$(MATLAB_LIB) \
-		# -lmat
-		# -lmx
+TARGET = parrot
+SRC = parrot.cpp
+HDR = helper.h
 
-load:
-	module load intel/2022a
-	module load Matlab
+# ---- BLAS / MKL ----
+# Default: OpenBLAS
+LIBS = -lopenblas
+
+# Optional: Intel MKL
+# Usage:
+#   export MKLROOT=/path/to/mkl
+#   make
+ifdef MKLROOT
+CXXFLAGS += -DMKL_AVAILABLE
+LIBS = -L$(MKLROOT)/lib/intel64 \
+       -lmkl_intel_lp64 -lmkl_core -lmkl_sequential
+endif
+
+all: $(TARGET)
+
+$(TARGET): $(SRC) $(HDR)
+	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LIBS)
 
 clean:
-	rm -f parrot
+	rm -f $(TARGET)

@@ -1,6 +1,9 @@
 #include <iostream>
 #include <vector>
+#ifdef MKL_AVAILABLE
 #include <mkl.h>
+#include <mkl_vml.h>
+#endif
 #include <string>
 #include <sstream>
 // #include <mat.h>
@@ -60,10 +63,10 @@ int main(int argc, char* argv[]){
     if(use_attr) {
         g1_feat = readFileToVector(data_path + "/graph1_feat.txt");
         g2_feat = readFileToVector(data_path + "/graph2_feat.txt");
-        printf("g1_feat size %d  g2_feat size %d\n", g1_feat.size(), g2_feat.size());
+        printf("g1_feat size %ld  g2_feat size %ld\n", g1_feat.size(), g2_feat.size());
     }
     int l = anchor_pairs.first.size();
-    printf("graph1 #nodes %d -- graph2 #nodes %d -- use node attributes %d --- # of anchor links %d\n\n", g1_num_nodes, g2_num_nodes, use_attr, anchor_pairs.first.size());
+    printf("graph1 #nodes %d -- graph2 #nodes %d -- use node attributes %d --- # of anchor links %ld\n\n", g1_num_nodes, g2_num_nodes, use_attr, anchor_pairs.first.size());
 
     // time_t t0 = std::time(NULL);
     auto time_0 = std::chrono::high_resolution_clock::now();
@@ -81,7 +84,7 @@ int main(int argc, char* argv[]){
     // compare(g2_rwr, data_path + "/rwr_emb2.txt", "g2_rwr");
     
     std::vector<double> cross_rwr_dist = get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l);
-    printf("cross_rwr_dist   computed size of it %d\n", cross_rwr_dist.size());
+    printf("cross_rwr_dist   computed size of it %ld\n", cross_rwr_dist.size());
 
     //copy rwr dist to attr dist because we dont have attributes
     std::vector<double> cross_attr_dist;
@@ -97,7 +100,6 @@ int main(int argc, char* argv[]){
     anchor_cost_zero(cross_attr_dist, g1_num_nodes, g2_num_nodes, anchor_pairs, 0.0);
 
     //compute intra network embedding and mask it with graph using spmm
-    matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     std::vector<double> intra_rwr_dist1, intra_rwr_dist2;
     if (use_attr) {
         intra_rwr_dist1 = get_normalized_neg_exp_dist (g1_feat, g1_feat, g1_num_nodes, g1_num_nodes, (g1_feat.size()) / g1_num_nodes);
