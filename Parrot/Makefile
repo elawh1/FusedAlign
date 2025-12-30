@@ -1,4 +1,5 @@
 CXX = icpc
+# CXX = mpic++
 CXXFLAGS = -O2 -qmkl
 # MATLAB_INC = $(MATLABROOT)/extern/include
 # MATLAB_LIB = $(MATLABROOT)/bin/glnxa64

@@ -1,0 +1,5 @@
+g1_num_nodes=3906
+g2_num_nodes=1118
+use_attr=1
+outer_iter=10
+inner_iter=5

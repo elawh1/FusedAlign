@@ -4,13 +4,20 @@
 #include <iostream>
 #include <vector>
 #include <cassert>
-// #include <mat.h>  
 #include <cmath>
 #include <algorithm>
 #include <fstream>
 #include <chrono>
 #include <mkl_vml.h>
-// #include <mkl_vml_functions.h>
+#include <unordered_map>
+#include <numeric>
+
+struct MKLCSC {
+    sparse_matrix_t spMat = nullptr;
+    std::vector<MKL_INT> col_start, col_end, row_ind;
+    std::vector<double>  vals;
+    ~MKLCSC() { if (spMat) mkl_sparse_destroy(spMat); }
+};
 
 std::vector<double> sparse_to_dense_colmajor(sparse_matrix_t A, MKL_INT nrows, MKL_INT ncols) {
     // Output: column-major dense matrix
@@ -41,7 +48,6 @@ std::vector<double> sparse_to_dense_colmajor(sparse_matrix_t A, MKL_INT nrows, M
 
     return dense;
 }
-
 
 void print_sparse_matrix_info(sparse_matrix_t A, const char* name = "matrix") {
     sparse_index_base_t indexing;
@@ -80,17 +86,6 @@ void print_sparse_matrix_info(sparse_matrix_t A, const char* name = "matrix") {
     printf("====================\n");
 }
 
-
-
-
-struct MKLCSC {
-    sparse_matrix_t spMat = nullptr;
-    std::vector<MKL_INT> col_start, col_end, row_ind;
-    std::vector<double>  vals;
-    ~MKLCSC() { if (spMat) mkl_sparse_destroy(spMat); }
-};
-
-
 std::vector<double> readFileToVector(const std::string &filename) {
     std::ifstream fin(filename);
     std::vector<double> data;
@@ -101,9 +96,7 @@ std::vector<double> readFileToVector(const std::string &filename) {
     return data;
 }
 
-
 sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int m, int n) {
-	
     MKL_INT nnz  = edgelist.size() / 2;
 	std::vector<MKL_INT> rows(nnz), cols(nnz);
 	std::vector<double> vals(nnz);
@@ -166,7 +159,7 @@ void compare( const std::vector<double>& cpp_vec, const std::string& filename, c
     std::cout << label << " out of " << cpp_vec.size() << " elements " << counter << " elements has more than 10 percent error" << std::endl;
     std::cout << label << " out of " << cpp_vec.size() << " elements " << counter_1 << " elements has more than 1 percent error" << std::endl;
     std::cout << label << " max_abs = " << max_abs << "  max_rel = " << max_rel
-              << "  cpp: " << b_err << "  python: " << a_err << "\n";
+              << "  cpp: " << b_err << "  python: " << a_err << "\n\n";
 }
 
 sparse_matrix_t make_coo_from_vec(const std::vector<double>& vec, int m, int n) {
@@ -225,11 +218,9 @@ MKLCSC make_csc_from_vec(const std::vector<double>& vec, MKL_INT m, MKL_INT n) {
 	return A;
 }
 
-
-
+//Create digonal sparse matrix from a vector of diagonal elements
 MKLCSC make_diag_csc(const std::vector<double>& diag, MKL_INT m, MKL_INT n, bool invert) {
     MKL_INT nnz = diag.size();
-
     MKLCSC A;    
     A.col_start.resize(n);             
     A.col_end.resize(n);             
@@ -254,51 +245,6 @@ MKLCSC make_diag_csc(const std::vector<double>& diag, MKL_INT m, MKL_INT n, bool
 	return A;
 }
 
-
-sparse_matrix_t make_one_hot_csc(std::vector<MKL_INT> vec, int m, int n) {
-    MKL_INT nnz = vec.size();
-    std::vector<MKL_INT> col_start(n), col_end(n);     
-    std::vector<MKL_INT> row_ind(nnz);                 
-    std::vector<double>  vals(nnz);
-
-    std::sort(vec.begin(), vec.end());
-
-    int k = 0;
-	for (MKL_INT j = 0; j < nnz; ++j) {
-        if (j   >  0)    col_end[j-1] = j;
-        col_start[j] = j;
-        row_ind[j] = vec[j];
-        vals[k] = (double) 1.0;
-    }
-
-	sparse_matrix_t A = nullptr;
-    auto st = mkl_sparse_d_create_csc(&A, SPARSE_INDEX_BASE_ZERO, m, n, col_start.data(), col_end.data(), row_ind.data(), vals.data());
-    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_create_csc failed");
-    mkl_sparse_optimize(A);
-	return A;
-
-}
-
-
-//this one works if g2_rwr nxl dense matrix stores row major
-// std::vector<double> l2_norm(std::vector<double>  g2_rwr, int n, int d) {
-//     std::vector<double> norms(n);
-
-//     // Compute row-wise L2 norm: norms[i] = sqrt(sum_j g2_rwr[i,j]^2)
-//     for (int i = 0; i < n; i++)
-//         norms[i] = cblas_dnrm2(d, &g2_rwr[i * d], 1);
-
-//     // Invert norms (avoid divide-by-zero)
-//     for (int i = 0; i < n; i++)
-//         if (norms[i] > 0) norms[i] = 1.0 / norms[i];
-
-//     // Scale each row by 1/norm[i]
-//     for (int i = 0; i < n; i++)
-//         cblas_dscal(d, norms[i], &g2_rwr[i * d], 1);
-
-//     return g2_rwr;
-// }
-
 std::vector<double> l2_norm(std::vector<double> g2_rwr, int n, int d) {
     std::vector<double> norms(n);
     // Row-wise L2 norm: row i = { g2_rwr[i + j*n] for j=0..d-1 }
@@ -312,8 +258,6 @@ std::vector<double> l2_norm(std::vector<double> g2_rwr, int n, int d) {
         cblas_dscal(d, norms[i], &g2_rwr[i], n);   // N=d, incx = n
     return g2_rwr;
 }
-
-
 
 std::vector<double> get_normalized_neg_exp_dist (std::vector<double>  rwr1, std::vector<double>  rwr2, int n1, int n2, int l) {
     std::vector<double> rwr1_norm = l2_norm( rwr1, n1, l);
@@ -329,21 +273,21 @@ std::vector<double> get_normalized_neg_exp_dist (std::vector<double>  rwr1, std:
     return cross_rwr_dist;
 }
 
-std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vector<double>& H_vec, MKL_INT m, MKL_INT n) {
-    std::vector<MKL_INT> anchor_g1;
-    std::vector<MKL_INT> anchor_g2;
+// std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vector<double>& H_vec, MKL_INT m, MKL_INT n) {
+//     std::vector<MKL_INT> anchor_g1;
+//     std::vector<MKL_INT> anchor_g2;
 
-    for(MKL_INT i = 0; i < m; i++) {
-        for(MKL_INT j = 0; j < n; j++) {
-            if(H_vec[(size_t)j * m + i] != (double) 0.0) {
-                // printf("anchor %d %d\n", i, j);
-                anchor_g1.push_back(i);
-                anchor_g2.push_back(j);
-            }
-        }
-    }
-    return {anchor_g1, anchor_g2};
-}
+//     for(MKL_INT i = 0; i < m; i++) {
+//         for(MKL_INT j = 0; j < n; j++) {
+//             if(H_vec[(size_t)j * m + i] != (double) 0.0) {
+//                 // printf("anchor %d %d\n", i, j);
+//                 anchor_g1.push_back(i);
+//                 anchor_g2.push_back(j);
+//             }
+//         }
+//     }
+//     return {anchor_g1, anchor_g2};
+// }
 
 std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vector<double>& H_vec) {
     std::vector<MKL_INT> anchor_g1;
@@ -388,8 +332,7 @@ std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL
     } 
     // throw std::runtime_error("mkl_sparse_spmm failed");
     mkl_sparse_optimize(graph_norm);
-    mkl_verbose(0);
-    
+
     int l = anchors.size();
     //these are column major
     std::vector<double> X_vals(n*l, 1.0);      // X(t), all ones
@@ -418,8 +361,7 @@ std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL
 }
 
 
-void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> anchors, double val)
-{
+void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> anchors, double val) {
     printf("intpu vec size %d  anchors pair size %d\n ", A.size(), anchors.first.size());
     const MKL_INT k = (MKL_INT) anchors.first.size();
     std::vector<MKL_INT> idx(k);
@@ -436,9 +378,7 @@ void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, std:
 }
 
 // Then set H[row, col] = 1 for each anchor
-void init_H_with_anchors(std::vector<double>& H, MKL_INT nrows, MKL_INT ncols, 
-    const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchors)
-{
+void init_H_with_anchors(std::vector<double>& H, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchors) {
     const MKL_INT k = (MKL_INT) anchors.first.size();
     if (anchors.second.size() != (size_t)k) {
         printf("anchor size mismatch: %zu vs %zu\n",
@@ -490,8 +430,7 @@ void init_H_with_anchors(std::vector<double>& H, MKL_INT nrows, MKL_INT ncols,
 // }
 
 
-sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n) 
-{
+sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n) {
     std::vector<double> all_ones(n, (double) 1.0);
     std::vector<double> graph_row_sum(n, (double) 0.0);
     matrix_descr descr;
@@ -514,16 +453,11 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n)
 }
 
 std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, const std::vector<double>& in_cross_dist, int n1, int n2, double rwr_restart_prob, 
-    double gamma, int max_iters = 50, double tol = 1e-2) 
-{
-    std::cout << "inside get_product_rwr_mat" << std::endl;
-
+    double gamma, int max_iters = 50, double tol = 1e-2) {
     matrix_descr descr;
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
-
     sparse_matrix_t graph1_normalized = row_normalize_graph( graph1_py, n1);
     sparse_matrix_t graph2_normalized = row_normalize_graph( graph2_py, n2);
-
     std::vector<double> out_cross_dist(n1 * n2, 0.0);
     std::vector<double> out_cross_dist_old(n1 * n2, 0.0);
     std::vector<double> temp(n1 * n2);
@@ -536,7 +470,6 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
         out_cross_dist_old = out_cross_dist;
         //second term computation
         //out_cross_dist is column major too
-        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_ROW_MAJOR, out_cross_dist.data(), n2, n2, 0.0, temp.data(), n2);
         //temp is n1xn2 temp = G1.cross_dist
         auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
         if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
@@ -544,18 +477,14 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
         //we need temp2 = temp^T
         mkl_domatcopy('C', 'T', n1, n2, 1.0, temp.data(), n1, temp2.data(), n2);
         //temp3 is n2xn1  temp3 = G2.(temp^T) = G2.(temp2)
-        // st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_ROW_MAJOR, temp2.data(), n2, n2, 0.0, temp3.data(), n1);
         st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, temp2.data(), n1, n2, 0.0, temp3.data(), n2);
         if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
-        // mkl_domatcopy('C', 'T', n1, n2, 1.0, temp2.data(), n2, out_cross_dist.data(), n2);
         //adding with scaling first element and transposing second element
-        // mkl_domatadd('R', 'N', 'T', n1, n2, (1+rwr_restart_prob), in_cross_dist.data(), n2, 1.0, temp2.data(), n2, out_cross_dist.data(), n2);
         //out_cross_dist:  n1 x n2
         mkl_domatadd('C', 'N', 'T', n1, n2, (1+rwr_restart_prob), in_cross_dist.data(), n1, 1.0, temp3.data(), n2, out_cross_dist.data(), n1);
         //compute max of absolute values of (out_cross_dist - out_cross_dist_old)
         vdSub(n1 * n2, out_cross_dist_old.data(), out_cross_dist.data(), diff.data());   
         vdAbs(n1*n2, diff.data(), diff_abs.data());
-        // out_cross_dist_abs_max_idx = cblas_idamax(n1*n2, diff_abs, 1);
         double max_diff = *std::max_element(diff_abs.begin(), diff_abs.end());
         if (max_diff < tol) break;
     }
@@ -590,12 +519,8 @@ double getMin(const std::vector<double>& v) {
     return min;
 }
 
-
-
 // H_in: n1 x n2, row-major
-std::vector<double> mina(const std::vector<double>& H_in, int n1, int n2, double epsilon)
-{
-    
+std::vector<double> mina(const std::vector<double>& H_in, int n1, int n2, double epsilon) {
     // const int N = n1 * n2;
     std::vector<double> H(n1 * n2);
     cblas_dcopy(n1 * n2, H_in.data(), 1, H.data(), 1);        // H = H_in
@@ -603,20 +528,16 @@ std::vector<double> mina(const std::vector<double>& H_in, int n1, int n2, double
     // H = -H_in / epsilon
     double alpha = -1.0 / epsilon;
     cblas_dscal(n1 * n2, alpha, H.data(), 1);
-    
     // H = exp(H)
     vdExp(n1 * n2, H.data(), H.data());
-    if(has_nan_or_inf(H))   { printf("H inside mina after exp has inf or nan\n");}
     // in_a = ones(n1) / n1
     std::vector<double> in_a(n1, 1.0 / static_cast<double>(n1));
 
     // s = H^T * in_a  (n2 vector): s_j = sum_i in_a_i * H_ij
     std::vector<double> s(n2);
     cblas_dgemv(CblasColMajor, CblasTrans, n1, n2, 1.0, H.data(), n1, in_a.data(), 1, 0.0, s.data(), 1);
-    
     // s = -epsilon * log(s)
     vdLn(n2, s.data(), s.data());
-    if(has_nan_or_inf(H))   { printf("H inside mina after ln has inf or nan\n");}
     cblas_dscal(n2, -epsilon, s.data(), 1);
     
     return s;  // shape: (1 x n2)
@@ -624,26 +545,20 @@ std::vector<double> mina(const std::vector<double>& H_in, int n1, int n2, double
 
 
 
-std::vector<double> minb(const std::vector<double>& H_in, int n1, int n2, double epsilon, int it)
-{
+std::vector<double> minb(const std::vector<double>& H_in, int n1, int n2, double epsilon, int it) {
     
     std::vector<double> H(n1 * n2);
     cblas_dcopy(n1 * n2, H_in.data(), 1, H.data(), 1);        // H = H_in
-    
     double alpha = -1.0 / epsilon;
     cblas_dscal(n1 * n2, alpha, H.data(), 1);
-    
     vdExp(n1 * n2, H.data(), H.data());
-    
     // in_b = ones(n2) / n2
     std::vector<double> in_b(n2, 1.0 / static_cast<double>(n2));
 
     // s = H * in_b  (n1 vector): s_i = sum_j in_b_j * H_ij
     std::vector<double> s(n1);
     cblas_dgemv(CblasColMajor, CblasNoTrans, n1, n2, 1.0, H.data(), n1,  in_b.data(), 1, 0.0, s.data(), 1);
-  
     vdLn(n1, s.data(), s.data());
-  
     cblas_dscal(n1, -epsilon, s.data(), 1);
    
     return s;  // shape: (n1 x 1)
@@ -651,19 +566,11 @@ std::vector<double> minb(const std::vector<double>& H_in, int n1, int n2, double
 
 
 // minaa(H) = mina(H - min(H,dim=0), eps) + min(H,dim=0)
-std::vector<double> minaa(const std::vector<double>& H, int n1, int n2, double epsilon)
-{
+std::vector<double> minaa(const std::vector<double>& H, int n1, int n2, double epsilon) {
     // const int N = n1 * n2;
     std::vector<double> H_shifted(n1 * n2);
     std::vector<double> col_min(n2);
 
-    // column-wise minima using MKL idamin over each column
-    // for (int j = 0; j < n2; ++j) {
-    //     int idx = cblas_idamin(n1, &H[j * n1], 1);    // contiguous col j
-    //     // if((std::isnan(H[j * n1 + idx] ) || std::isinf(H[j * n1 + idx] ) )) printf("errorrr - H has inf  j %d \n", j);
-    //     if((j * n1 + idx) >= n1*n2 || (j * n1 + idx) < 0) printf("errorrr - row min idx out of range\n");
-    //     else  col_min[j] = H[j * n1 + idx];
-    // }
     for (int j = 0; j < n2; ++j) {
         const double* col = &H[j * n1];
         double m = col[0];
@@ -677,13 +584,10 @@ std::vector<double> minaa(const std::vector<double>& H, int n1, int n2, double e
     std::vector<double> ones_n1(n1, 1.0);
     std::vector<double> M(n1 * n2);
     cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, ones_n1.data(), n1, col_min.data(), 1, 0.0, M.data(), n1);
-
     // H_shifted = H - M
     mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, H.data(), n1, -1.0, M.data(), n1, H_shifted.data(), n1);
-
-    // mina on shifted
+    // mina on H_shifted
     std::vector<double> res = mina(H_shifted, n1, n2, epsilon); // size n2
-
     // add column minima back: res += col_min
     cblas_daxpy(n2, 1.0, col_min.data(), 1, res.data(), 1);
 
@@ -693,22 +597,11 @@ std::vector<double> minaa(const std::vector<double>& H, int n1, int n2, double e
 
 
 // minbb(H) = minb(H - min(H,dim=1), eps) + min(H,dim=1)
-std::vector<double> minbb(const std::vector<double>& H, int n1, int n2, double epsilon, int it)
-{
+std::vector<double> minbb(const std::vector<double>& H, int n1, int n2, double epsilon, int it) {
     // const int N = n1 * n2;
     std::vector<double> H_shifted(n1 * n2);
     std::vector<double> row_min(n1);
 
-    // row-wise minima via idamin over each row (contiguous)
-    // for (int i = 0; i < n1; ++i) {
-    //     // int idx = cblas_idamin(n2, &H[i * n2], 1);
-    //     // row_min[i] = H[i * n2 + idx];
-    //     int idx = cblas_idamin(n2, &H[i], n1);  // stride = n1 (column-major)
-    //     // if (it == 0 ) printf(" %.6f ", H[i + idx * n1]);
-
-    //     if(i + idx * n1 >= n1*n2 || i + idx * n1 < 0) printf("errorrr - row min idx out of range\n");
-    //     else  row_min[i] = H[i + idx * n1];
-    // }
     for (int i = 0; i < n1; ++i) {
         double m = H[i + 0 * n1];          // first column, row i
         for (int j = 1; j < n2; ++j) {
@@ -727,10 +620,8 @@ std::vector<double> minbb(const std::vector<double>& H, int n1, int n2, double e
     // H_shifted = H - M
     // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, H.data(), n2, -1.0, M.data(), n2, H_shifted.data(), n2);
     mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, H.data(), n1, -1.0, M.data(), n1, H_shifted.data(), n1);
-
     // minb on shifted
     std::vector<double> res = minb(H_shifted, n1, n2, epsilon, it); // size n1
-
     // add row minima back: res += row_min
     cblas_daxpy(n1, 1.0, row_min.data(), 1, res.data(), 1);
 
@@ -739,8 +630,7 @@ std::vector<double> minbb(const std::vector<double>& H, int n1, int n2, double e
 
 
 std::vector<double> compute_L_fixed( const std::vector<double>& intra_dist1, const std::vector<double>& intra_dist2, const std::vector<double>& r, const std::vector<double>& c, 
-    const std::vector<double>& one_vec_n1, const std::vector<double>& one_vec_n2, int n1, int n2)
-{
+    const std::vector<double>& one_vec_n1, const std::vector<double>& one_vec_n2, int n1, int n2) {
     // 1) Square intra_dist1 and intra_dist2 elementwise
     std::vector<double> A1(intra_dist1.size());
     std::vector<double> A2(intra_dist2.size());
@@ -776,25 +666,18 @@ std::vector<double> compute_L_fixed( const std::vector<double>& intra_dist1, con
 
 
 
-
 std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, int n1, int n2,
     std::vector<double> cross_dist, std::vector<double> intra_dist1, std::vector<double> intra_dist2, int inner_iters, int outer_iters,
     double lambda_n, double lambda_a, double lambda_p, double lambda_e_in, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs, 
-    const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, std::vector<double> anchors_test)
-{
+    const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, std::vector<double> anchors_test) {
     sparse_matrix_t row_norm_adj1 = row_normalize_graph(graph1_py, n1);
     sparse_matrix_t row_norm_adj2 = row_normalize_graph(graph2_py, n2);
-
-
     std::vector<double> adj1_dense = sparse_to_dense_colmajor(row_norm_adj1, n1, n1);
     std::vector<double> adj2_dense = sparse_to_dense_colmajor(row_norm_adj2, n2, n2);
-    compare(adj1_dense, data_path + "/row_norm_adj1.txt", "row_norm_adj1");
-    compare(adj2_dense, data_path + "/row_norm_adj2.txt", "row_norm_adj2");
-
+    // compare(adj1_dense, data_path + "/row_norm_adj1.txt", "row_norm_adj1");
+    // compare(adj2_dense, data_path + "/row_norm_adj2.txt", "row_norm_adj2");
     double lambda_total = lambda_n + lambda_a + lambda_p;
     double lambda_e = lambda_e_in * n1 * n2;
-    printf("max intra_dist1 %.6f  min intra_dist1 %.6f \n ", getMax(intra_dist1), getMin(intra_dist1));
-    printf("max intra_dist2 %.6f  min intra_dist2 %.6f \n ", getMax(intra_dist2), getMin(intra_dist2));
     std::vector<double> one_vec_n1(n1, 1.0);
     std::vector<double> one_vec_n2(n2, 1.0);
     
@@ -811,11 +694,9 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
     std::vector<double> H(n1 * n2, 1e-6);
     init_H_with_anchors(H, n1, n2, anchor_pairs);
 
-    printf("max intra_dist1 %.6f  min intra_dist1 %.6f \n ", getMax(intra_dist1), getMin(intra_dist1));
-    printf("max intra_dist2 %.6f  min intra_dist2 %.6f \n ", getMax(intra_dist2), getMin(intra_dist2));
     std::vector<double> L_fixed = compute_L_fixed(intra_dist1, intra_dist2, r, c, one_vec_n1, one_vec_n2, n1, n2);
-    printf(" \n max L_fixed %.6f   min L_fixedL %.6f \n ", getMax(L_fixed), getMin(L_fixed));
-    compare(L_fixed, data_path + "/L_fixed.txt.txt", "L_fixed");
+    // compare(L_fixed, data_path + "/L_fixed.txt.txt", "L_fixed");
+
     std::vector<double> S_old(n1*n2);
     std::vector<double> A_S(n1*n2);
     std::vector<double> A2T_term(n1*n2);
@@ -825,7 +706,7 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
     std::vector<double> Cost(n1*n2);
     std::vector<double> S_log(n1*n2);
     std::vector<double> diff(n1*n2), diff_abs(n1*n2);
-    std::vector<double> A_mat(n1*n2), B_mat(n1*n2);
+    std::vector<double> A_mat(n1*n2), B_mat(n1*n2, 1.0 / n2);
     std::vector<double> RC_mat(n1*n2), C_mat(n1*n2);
     std::vector<double> A1T_S(n1 * n2);      // n1 x n2
     std::vector<double> A1T_S_T(n2 * n1);
@@ -855,8 +736,7 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         // L = L_fixed - 2 * A2T_term
         cblas_dcopy(n1 * n2, L_fixed.data(), 1, L.data(), 1);
         cblas_daxpy(n1 * n2, -2.0, A2T_term.data(), 1, L.data(), 1);
-        printf("\n outer iter %d max L %.6f  min L %.6f \n ", it, getMax(L), getMin(L));
-        compare(L, data_path + "/L_outer_iter_" + std::to_string(it) + ".txt", "L_iter_"+ std::to_string(it));
+        // compare(L, data_path + "/L_outer_iter_" + std::to_string(it) + ".txt", "L_iter_"+ std::to_string(it));
         // ---- C = cross_dist + lambda_e * L - lambda_n * log(row_norm_adj1.T @ S @ row_norm_adj2) - lambda_a * log(H) ----
         // Start from cross_dist
         cblas_dcopy(n1 * n2, cross_dist.data(), 1, C.data(), 1);
@@ -882,15 +762,15 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         // RW_term = (A2_A1T_S_T)^T  (n1 x n2)
         // mkl_domatcopy('C', 'T', n2, n1, 1.0, A2_A1T_S_T.data(), n2, RW_term.data(), n1);
         
-        double mn = RW_term[0], mx = RW_term[0];
-        int num_le0 = 0;
-        for (int i = 0; i < n1*n2; ++i) {
-            mn = std::min(mn, RW_term[i]);
-            mx = std::max(mx, RW_term[i]);
-            if (RW_term[i] <= 0.0) num_le0++;
-        }
-        std::cerr << "RW_term prelog min=" << mn << " max=" << mx
-                << " count<=0=" << num_le0 << "\n";
+        // double mn = RW_term[0], mx = RW_term[0];
+        // int num_le0 = 0;
+        // for (int i = 0; i < n1*n2; ++i) {
+        //     mn = std::min(mn, RW_term[i]);
+        //     mx = std::max(mx, RW_term[i]);
+        //     if (RW_term[i] <= 0.0) num_le0++;
+        // }
+        // std::cerr << "RW_term prelog min=" << mn << " max=" << mx
+        //         << " count<=0=" << num_le0 << "\n";
 
         // log(RW_term)
         vdLn(n1*n2, RW_term.data(), RW_term.data());
@@ -914,33 +794,14 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
             }
         }
 
-        printf("outer iter %d max C %.6f  min C %.6f \n ", it, getMax(C), getMin(C));
-        compare(C, data_path + "/C_outer_iter_" + std::to_string(it) + ".txt", "C_iter_"+ std::to_string(it));
+        // compare(C, data_path + "/C_outer_iter_" + std::to_string(it) + ".txt", "C_iter_"+ std::to_string(it));
 
         // ---- Cost = C - lambda_p * log(S) ----
         cblas_dcopy(n1*n2, S.data(), 1, S_log.data(), 1);
         vdLn(n1*n2, S_log.data(), S_log.data());
         cblas_dcopy(n1*n2, C.data(), 1, Cost.data(), 1);
         cblas_daxpy(n1*n2, -lambda_p, S_log.data(), 1, Cost.data(), 1);
-      
-        if (has_nan(C) || has_nan(Cost) || has_nan(RW_term) || has_nan(a) || has_nan(b) || has_nan(S)) {
-            std::cout << "NaN appeared at outer iter " << it << "\n";
-            if(has_nan(C))
-                std::cout << "NaN appeared in C at outer iter " << it << "\n";
-            if(has_nan(Cost))
-                std::cout << "NaN appeared in Cost at outer iter " << it << "\n";
-            if(has_nan(RW_term))
-                std::cout << "NaN appeared in RW_term at outer iter " << it << "\n";
-            if(has_nan(a))
-                std::cout << "NaN appeared in a at outer iter " << it << "\n";
-            if(has_nan(b))
-                std::cout << "NaN appeared in b at outer iter " << it << "\n";
-            if(has_nan(S))
-                std::cout << "NaN appeared in S at outer iter " << it << "\n";
 
-        }
-
-        if (has_nan_or_inf(Cost))  {  printf(" outer iter %d Cost has nan or inf\n", it); }
         // std::vector<double> a_row(n1, 1.0 / n1); 
         // std::vector<double> b_col(n2, 1.0 / n2);   
         std::vector<double> a_row(n2); 
@@ -949,20 +810,13 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         for (int j = 0; j < inner_iters; ++j) {
             printf(" \n ---- outer iter %d --- inner iter %d --- \n", it, j);
             // Cost - b  (b is n1 x 1, broadcast over columns)
-            if(j == 0) {
-                // std::vector<double> b_row(n2, 1.0 / n2);
-                // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, b_row.data(), 1, 0.0, B_mat.data(), n1);
-                std::vector<double> B_mat(n1*n2, 1.0 / n2);
-            }
-            else {
+            if( j > 0 ) {
                 // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
                 cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
             }
 
             // tmp_n1n2 = Cost - B_mat
             mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, B_mat.data(), n1, tmp_n1n2.data(), n1);
-            
-            if (has_nan_or_inf(tmp_n1n2))  {  printf(" outer iter %d  inner iter %d tmp_n1n2 input to minaa has nan or inf\n", it, j); }
 
             a_row = minaa(tmp_n1n2, n1, n2, lambda_total);
            
@@ -974,15 +828,12 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
             // tmp_n1n2 = Cost - A_mat
             mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, A_mat.data(), n1, tmp_n1n2.data(), n1);
 
-            if (has_nan_or_inf(tmp_n1n2))  {  printf(" outer iter %d  inner iter %d tmp_n1n2 input to minbb has nan or inf\n", it, j); }
-
             // b_col = minbb(tmp_n1n2, lambda_total)  (length n1)
             b_col = minbb(tmp_n1n2, n1, n2, lambda_total, j);
         }
 
-        printf("outer iter %d max a_row %.6f  min a_row %.6f --- and max b_col %.6f  min b_col %.6f \n ", it, getMax(a_row), getMin(a_row), getMax(b_col), getMin(b_col));
-        compare(a_row, data_path + "/a_outer_iter_" + std::to_string(it) + ".txt", "a_iter_"+ std::to_string(it));
-        compare(b_col, data_path + "/b_outer_iter_" + std::to_string(it) + ".txt", "b_iter_"+ std::to_string(it));
+        // compare(a_row, data_path + "/a_outer_iter_" + std::to_string(it) + ".txt", "a_iter_"+ std::to_string(it));
+        // compare(b_col, data_path + "/b_outer_iter_" + std::to_string(it) + ".txt", "b_iter_"+ std::to_string(it));
 
         // ---- S = 0.05 * S_old + 0.95 * r * exp((a + b - Cost)/lambda_total) * c ----
         // A_mat = 1_n1 * a_row^T
@@ -995,31 +846,8 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         // tmp_n1n2 = tmp_n1n2 - Cost
         mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, tmp_n1n2.data(), n1, -1.0, Cost.data(), n1, tmp_n1n2.data(), n1);
    
-        printf("outer iter %d max a+b-cost %.6f  min a+b-cost %.6f  lambda_total  is %.6f\n ", it, getMax(tmp_n1n2), getMin(tmp_n1n2), lambda_total);
-
         // tmp_n1n2 = tmp_n1n2 / lambda_total   
         cblas_dscal(n1*n2, 1.0 / lambda_total, tmp_n1n2.data(), 1);
-
-        printf("outer iter %d max (a+b-cost) / lambda_total %.6f  min (a+b-cost) / lambda_total %.6f\n ", it, getMax(tmp_n1n2), getMin(tmp_n1n2));
-
-        //------- This is inserted to fix C zero problem -----  //
-        // Find max over tmp_n1n2 (the exponent)
-        // double maxtmp = tmp_n1n2[0];
-        // for (int i = 1; i < n1*n2; ++i) {
-        //     if (tmp_n1n2[i] > maxtmp) maxtmp = tmp_n1n2[i];
-        // }
-        // // Shift so the largest exponent is 0 (others ≤ 0)
-        // for (int i = 0; i < n1*n2; ++i) {
-        //     tmp_n1n2[i] -= maxtmp;
-        // }
-        // // 3) Optional clipping to avoid very negative tails
-        // const double cutoff = -50.0;
-        // for (int i = 0; i < n1*n2; ++i) {
-        //     if (tmp_n1n2[i] < cutoff) tmp_n1n2[i] = cutoff;
-        // }
-
-        //------- This is inserted to fix C zero problem -----  //
-
 
         // tmp_n1n2 = exp(tmp_n1n2)
         vdExp(n1*n2, tmp_n1n2.data(), tmp_n1n2.data());
@@ -1031,48 +859,180 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
     
         // tmp_n1n2 = tmp_n1n2 ⊙ RC_mat
         vdMul(n1*n2, tmp_n1n2.data(), RC_mat.data(), tmp_n1n2.data());
-       
         // tmp_n1n2 = tmp_n1n2 ⊙ C_mat
         vdMul(n1*n2, tmp_n1n2.data(), C_mat.data(), tmp_n1n2.data());
-      
-        // double minCost = tmp_n1n2[0], maxCost = tmp_n1n2[0];
-        // for (int i = 1; i < n1*n2; ++i) {
-        //     if (tmp_n1n2[i] < minCost) minCost = tmp_n1n2[i];
-        //     if (tmp_n1n2[i] > maxCost) maxCost = tmp_n1n2[i];
-        // }
-
-        // double minX = 1e9, maxX = -1e9;
-        // for (int i = 0; i < n1*n2; ++i) {
-        //     double x = (A_mat[i] + B_mat[i] - Cost[i]) / lambda_total;  // same as your tmp before exp
-        //     if (x < minX) minX = x;
-        //     if (x > maxX) maxX = x;
-        // }
-        // std::cerr << "outer " << it 
-        //         << "  Cost range: [" << minCost << ", " << maxCost << "]"
-        //         << "  X range: [" << minX << ", " << maxX << "]\n";
-
-        printf("outer iter %d max bigger S %.6f  min bigger S %.6f\n ", it, getMax(tmp_n1n2), getMin(tmp_n1n2));
-
 
         // S = 0.95 * tmp_n1n2 + 0.05 * S_old
         cblas_dcopy(n1*n2, tmp_n1n2.data(), 1, S.data(), 1);
         cblas_dscal(n1*n2, 0.95, S.data(), 1);
         cblas_daxpy(n1*n2, 0.05, S_old.data(), 1, S.data(), 1);
-        printf("outer iter %d total S %.6f  min total S %.6f\n ", it, getMax(S), getMin(S));
+
         // diff_S = sum |S - S_old|
         mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, S.data(), n1, -1.0, S_old.data(), n1, diff.data(), n1);
         vdAbs(n1*n2, diff.data(), diff_abs.data());
         double diff_S = cblas_dasum(n1*n2, diff_abs.data(), 1);
         printf("inner iter %d and diff of S %.6f\n", it, diff_S);
-        double maxS = S[0], minS = S[0];
-        for (int i = 1; i < n1 * n2; ++i) {
-            if (S[i] > maxS) maxS = S[i];
-            if (S[i] < minS) minS = S[i];
-        }
-        std::cerr << "Before exp: minS = " << minS << ", maxS = " << maxS << "\n";
+        // double maxS = S[0], minS = S[0];
+        // for (int i = 1; i < n1 * n2; ++i) {
+        //     if (S[i] > maxS) maxS = S[i];
+        //     if (S[i] < minS) minS = S[i];
+        // }
+        // std::cerr << "Before exp: minS = " << minS << ", maxS = " << maxS << "\n";
     }
     std::cout << "done con_prox_pt_opt_init" << std::endl;
 
     return S;
 
+}
+
+
+// S: column-major n1 x n2 matrix
+// anchor_pairs_test: vector of (left_node, right_node)
+// ks: e.g. {1, 10, 30, 50}
+std::unordered_map<int, double> hits_ks_ltr_scores( const std::vector<double>& S, int n1, int n2, 
+    const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, const std::vector<int>& ks) {
+
+    const auto& left_ids  = anchor_pairs_test.first;
+    const auto& right_ids = anchor_pairs_test.second;
+    const int num_tests = left_ids.size();
+    std::unordered_map<int, int> hit_counts;
+    std::unordered_map<int, double> hits_ks;
+    for (int k : ks) hit_counts[k] = 0;
+    std::vector<int> idx(n2);
+
+    for (int t = 0; t < num_tests; ++t) {
+        int i = anchor_pairs_test.first[t];
+        int j_true = anchor_pairs_test.second[t];
+        std::iota(idx.begin(), idx.end(), 0);
+        std::sort(idx.begin(), idx.end(),
+            [&](int a, int b) {
+                return S[i + a * n1] > S[i + b * n1];
+            });
+
+        for (int r = 0; r < n2; ++r) {
+            if (idx[r] == j_true) {
+                for (int k : ks)
+                    if (r < k) hit_counts[k]++;
+                break;
+            }
+        }
+    }
+    // normalize
+    for (int k : ks) {
+        hits_ks[k] = static_cast<double>(hit_counts[k]) / num_tests;
+    }
+
+    return hits_ks;
+}
+
+// S: column-major n1 x n2 similarity matrix
+// anchor_pairs_test: vector of (left_node, right_node)
+// ks: e.g. {1, 10, 30, 50}
+std::unordered_map<int, double> hits_ks_rtl_scores( const std::vector<double>& S, int n1, int n2,
+    const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, const std::vector<int>& ks) {
+
+    const auto& left_ids  = anchor_pairs_test.first;
+    const auto& right_ids = anchor_pairs_test.second;
+    const int num_tests = left_ids.size();
+
+    std::unordered_map<int, int> hit_counts;
+    std::unordered_map<int, double> hits_ks;
+    for (int k : ks) hit_counts[k] = 0;
+
+    std::vector<int> idx(n1);
+
+    for (int t = 0; t < num_tests; ++t) {
+        int j = right_ids[t];
+        int i_true = left_ids[t];
+        std::iota(idx.begin(), idx.end(), 0);
+        std::sort(idx.begin(), idx.end(),
+            [&](int a, int b) {
+                return S[a + j * n1] > S[b + j * n1];
+            });
+        for (int r = 0; r < n1; ++r) {
+            if (idx[r] == i_true) {
+                for (int k : ks)
+                    if (r < k) hit_counts[k]++;
+                break;
+            }
+        }
+    }
+    for (int k : ks)
+        hits_ks[k] = double(hit_counts[k]) / num_tests;
+
+    return hits_ks;
+}
+
+std::unordered_map<int, double> hits_ks_mean_scores( const std::vector<double>& S, int n1, int n2,
+    const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, const std::vector<int>& ks) {
+    std::unordered_map<int, double> hits_ks;
+    auto hits_ltr = hits_ks_ltr_scores( S, n1, n2, anchor_pairs_test, ks);
+    auto hits_rtl = hits_ks_rtl_scores( S, n1, n2, anchor_pairs_test, ks);
+    for (int k : ks) {
+        hits_ks[k] = 0.5 * (hits_ltr[k] + hits_rtl[k]);
+    }
+    return hits_ks;
+}
+
+
+double mrr_ltr_score_cpp( const std::vector<double>& S, int n1, int n2, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test) {
+    const auto& left_ids  = anchor_pairs_test.first;
+    const auto& right_ids = anchor_pairs_test.second;
+    const int num_tests = left_ids.size();
+    std::vector<int> idx(n2);
+    double mrr_sum = 0.0;
+
+    for (int t = 0; t < num_tests; ++t) {
+        int i = left_ids[t];        // left node
+        int j_true = right_ids[t];  // correct right node
+        std::iota(idx.begin(), idx.end(), 0);
+        // sort similarity row i descending
+        std::sort(idx.begin(), idx.end(),
+            [&](int a, int b) {
+                return S[i + a * n1] > S[i + b * n1];
+            });
+        // find rank
+        for (int r = 0; r < n2; ++r) {
+            if (idx[r] == j_true) {
+                mrr_sum += 1.0 / double(r + 1);  // 1-based rank
+                break;
+            }
+        }
+    }
+
+    return mrr_sum / num_tests;
+}
+
+double mrr_rtl_score_cpp( const std::vector<double>& S, int n1, int n2, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test) {
+    const auto& left_ids  = anchor_pairs_test.first;
+    const auto& right_ids = anchor_pairs_test.second;
+    const int num_tests = left_ids.size();
+    std::vector<int> idx(n1);
+    double mrr_sum = 0.0;
+
+    for (int t = 0; t < num_tests; ++t) {
+        int j = right_ids[t];       // right node
+        int i_true = left_ids[t];   // correct left node
+        std::iota(idx.begin(), idx.end(), 0);
+        // sort similarity column j descending
+        std::sort(idx.begin(), idx.end(),
+            [&](int a, int b) {
+                return S[a + j * n1] > S[b + j * n1];
+            });
+        // find rank
+        for (int r = 0; r < n1; ++r) {
+            if (idx[r] == i_true) {
+                mrr_sum += 1.0 / double(r + 1);  // 1-based rank
+                break;
+            }
+        }
+    }
+
+    return mrr_sum / num_tests;
+}
+
+double mrr_mean_score_cpp( const std::vector<double>& S, int n1, int n2, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test) {
+    double mrr_ltr = mrr_ltr_score_cpp(S, n1, n2, anchor_pairs_test);
+    double mrr_rtl = mrr_rtl_score_cpp(S, n1, n2, anchor_pairs_test);
+    return 0.5 * (mrr_ltr + mrr_rtl);
 }
