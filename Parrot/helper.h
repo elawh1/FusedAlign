@@ -1,5 +1,6 @@
 #ifdef MKL_AVAILABLE
 #include <mkl.h>
+#include <omp.h>
 #include <mkl_vml.h>
 #endif
 #include <cstdio>
@@ -86,6 +87,15 @@ void print_sparse_matrix_info(sparse_matrix_t A, const char* name = "matrix") {
         }
     }
     printf("====================\n");
+}
+
+void print_num_zeros(std::vector<double>  M, const char* name ) {
+    int counter = 0;
+    for(int i=0; i< M.size(); i++) {
+        if(M[i] == (double) 0.0)    counter++;
+    }
+    printf(" %s has %d zeros out of %d values\n", name, counter, M.size());
+    return ;
 }
 
 std::vector<double> readFileToVector(const std::string &filename) {
@@ -247,49 +257,29 @@ MKLCSC make_diag_csc(const std::vector<double>& diag, MKL_INT m, MKL_INT n, bool
 	return A;
 }
 
-std::vector<double> l2_norm(std::vector<double> g2_rwr, int n, int d) {
+std::vector<double> l2_norm(std::vector<double> rwr, int n, int d) {
     std::vector<double> norms(n);
-    // Row-wise L2 norm: row i = { g2_rwr[i + j*n] for j=0..d-1 }
+    // Row-wise L2 norm: row i = { rwr[i + j*n] for j=0..d-1 }
     for (int i = 0; i < n; i++)
-        norms[i] = cblas_dnrm2(d, &g2_rwr[i], n);   // N=d, incx = n
+        norms[i] = cblas_dnrm2(d, &rwr[i], n);   // N=d, incx = n
     // Invert norms
     for (int i = 0; i < n; i++)
         if (norms[i] > 0.0) norms[i] = 1.0 / norms[i];
     // Scale each row by 1/norm[i]
     for (int i = 0; i < n; i++)
-        cblas_dscal(d, norms[i], &g2_rwr[i], n);   // N=d, incx = n
-    return g2_rwr;
+        cblas_dscal(d, norms[i], &rwr[i], n);   // N=d, incx = n
+    return rwr;
 }
 
 std::vector<double> get_normalized_neg_exp_dist (std::vector<double>  rwr1, std::vector<double>  rwr2, int n1, int n2, int l) {
     std::vector<double> rwr1_norm = l2_norm( rwr1, n1, l);
     std::vector<double> rwr2_norm = l2_norm( rwr2, n2, l);
-
     std::vector<double> cross_rwr_dist(n1 * n2);
-
     // cross_rwr_dist = exp( - rwr1_norm * rwr2_norm^T )
-    // cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n1, n2, l, -1.0, rwr1_norm.data(), l, rwr2_norm.data(), l, 0.0, cross_rwr_dist.data(), n2);
     cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, l, -1.0, rwr1_norm.data(), n1, rwr2_norm.data(), n2, 0.0, cross_rwr_dist.data(), n1);
-
     vdExp(n1 * n2, cross_rwr_dist.data(), cross_rwr_dist.data());
     return cross_rwr_dist;
 }
-
-// std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vector<double>& H_vec, MKL_INT m, MKL_INT n) {
-//     std::vector<MKL_INT> anchor_g1;
-//     std::vector<MKL_INT> anchor_g2;
-
-//     for(MKL_INT i = 0; i < m; i++) {
-//         for(MKL_INT j = 0; j < n; j++) {
-//             if(H_vec[(size_t)j * m + i] != (double) 0.0) {
-//                 // printf("anchor %d %d\n", i, j);
-//                 anchor_g1.push_back(i);
-//                 anchor_g2.push_back(j);
-//             }
-//         }
-//     }
-//     return {anchor_g1, anchor_g2};
-// }
 
 std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vector<double>& H_vec) {
     std::vector<MKL_INT> anchor_g1;
@@ -302,7 +292,6 @@ std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vect
 }
 
 std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL_INT> anchors, MKL_INT n,  float restart_prob, int max_iters, bool connect_isolated) {
-	std::vector<double>  rwr;
     //connect isolated nodes and row normalize A  
     std::vector<double> all_ones(n, (double) 1.0);
     std::vector<double> graph_row_sum(n, (double) 0.0);
@@ -312,52 +301,85 @@ std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL
     sparse_status_t status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph, descr, all_ones.data(), (double) 1.0, graph_row_sum.data());
     if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
 
-    // -----    TODO   -----  Connect isolated nodes
+    auto time_0 = std::chrono::high_resolution_clock::now();
     
+    // -----    TODO   -----  Connect isolated nodes
+    std::vector<MKL_INT> isolated;
+    bool isolated_node = false ;
+    for (MKL_INT i = 0; i < n; ++i) {
+        if (graph_row_sum[i] == 0.0) {
+            isolated.push_back(i);
+            isolated_node = true;
+        }   
+    }
+    printf("num of isolated %ld\n", isolated.size());
+    sparse_matrix_t graph_connected = nullptr;
+    if(isolated_node) {
+        printf("connecting isolated nodes\n");
+
+        std::vector<double> edge_list;
+        edge_list.reserve(isolated.size() * n * 2);
+        for (MKL_INT i : isolated) {
+            for (MKL_INT j = 0; j < n; ++j) {
+                edge_list.push_back(static_cast<double>(i));
+                edge_list.push_back(static_cast<double>(j));
+            }
+            // update row sum directly
+            graph_row_sum[i] = static_cast<double>(n);
+        }
+        // build CSR matrix (values are implicitly 1.0 inside)
+        sparse_matrix_t add_mat = make_mat_from_edgelist(edge_list, n, n);
+        //add add_mat to original graph
+        status = mkl_sparse_d_add(SPARSE_OPERATION_NON_TRANSPOSE,graph, 1.0, add_mat, &graph_connected);
+        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_add failed in get_batch_rwr_scores");
+
+        mkl_sparse_destroy(add_mat);
+
+        // //update graph_row_sum
+        status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph_connected, descr, all_ones.data(), (double) 1.0, graph_row_sum.data());
+        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
+    }
+    else {
+        graph_connected = graph;
+    }
+    auto time_1 = std::chrono::high_resolution_clock::now();
+
     MKLCSC Dinv = make_diag_csc(graph_row_sum, n, n, true);
     sparse_matrix_t graph_norm = nullptr;    
     mkl_sparse_optimize(Dinv.spMat);
-    mkl_sparse_optimize(graph);
-    status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Dinv.spMat, graph, &graph_norm);
-    if (status != SPARSE_STATUS_SUCCESS) {
-        switch (status) {
-            case SPARSE_STATUS_NOT_INITIALIZED:
-                std::cerr << "MKL Error: The routine was not initialized." << std::endl;
-                break;
-            case SPARSE_STATUS_ALLOC_FAILED:
-                std::cerr << "MKL Error: Memory allocation failed." << std::endl;
-                break;
-            default:
-                std::cerr << "MKL Error: An unknown error occurred with status code " << status << std::endl;
-                break;
-        }
-    } 
-    // throw std::runtime_error("mkl_sparse_spmm failed");
+    mkl_sparse_optimize(graph_connected);
+    status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Dinv.spMat, graph_connected, &graph_norm);
+    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_spmm failed in get_batch_rwr_scores");
     mkl_sparse_optimize(graph_norm);
-
+    sparse_matrix_t graph_norm_csr = nullptr;
+    status = mkl_sparse_convert_csr(graph_norm, SPARSE_OPERATION_NON_TRANSPOSE, &graph_norm_csr);
+    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_convert_csr failed in get_batch_rwr_scores");
+    status = mkl_sparse_optimize(graph_norm_csr);
+    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_optimize failed in get_batch_rwr_scores");  
     int l = anchors.size();
+    auto time_2 = std::chrono::high_resolution_clock::now();
     //these are column major
     std::vector<double> X_vals(n*l, 1.0);      // X(t), all ones
     std::vector<double> Xnext_vals(n*l, 0.0);
-
-    sparse_matrix_t graph_norm_csr = nullptr;
-    status = mkl_sparse_convert_csr(graph_norm, SPARSE_OPERATION_NON_TRANSPOSE, &graph_norm_csr);
-    assert(status == SPARSE_STATUS_SUCCESS && graph_norm_csr);
-    status = mkl_sparse_optimize(graph_norm_csr);
-    
     //one hot encoding E matrix
     std::vector<double> E(n * l, 0.0);
     for (int j = 0; j < l; ++j) {
         E[ anchors[j] + j * n ] = 1.0;   // one-hot at (row=anchor[j], col=j)
     }
-
+    auto time_3 = std::chrono::high_resolution_clock::now();
     for(int i=0; i < max_iters; i++) {
         status = mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, (double) (1-restart_prob), graph_norm_csr, descr, SPARSE_LAYOUT_COLUMN_MAJOR, X_vals.data(), l, n, 0.0, Xnext_vals.data(), n);
         if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
         cblas_daxpy(n * l, restart_prob, E.data(), 1, Xnext_vals.data(), 1);
-
         std::swap(X_vals, Xnext_vals);
     }
+    auto time_4= std::chrono::high_resolution_clock::now();
+    std::cout << "connect isolated : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()
+    << " normalize : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()
+    << " rwr before iteration=50: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()
+    << " rwr iteration=50: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()
+     << " ms" << std::endl;
+
     //column major dense matrix nxl
 	return Xnext_vals;
 }
@@ -387,16 +409,13 @@ void init_H_with_anchors(std::vector<double>& H, MKL_INT nrows, MKL_INT ncols, c
                anchors.first.size(), anchors.second.size());
         return;
     }
-
     for (MKL_INT t = 0; t < k; ++t) {
         MKL_INT i = anchors.first[t];   // row index
         MKL_INT j = anchors.second[t];  // col index
-
         if (i < 0 || i >= nrows || j < 0 || j >= ncols) {
             printf("error init_H_with_anchors: out-of-range anchor (%d,%d)\n", i, j);
             continue;
         }
-
         MKL_INT idx = i + j * nrows;    // column-major: (row, col) -> index
         H[idx] = 1.0;
     }
@@ -437,16 +456,54 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n) {
     std::vector<double> graph_row_sum(n, (double) 0.0);
     matrix_descr descr;
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
-
     sparse_status_t status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph, descr, all_ones.data(), (double) 1.0, graph_row_sum.data());
-    // if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed");
-    if (status != SPARSE_STATUS_SUCCESS) { std::cerr << "error : mkl_sparse_d_mv failed" << std::endl; }
+    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in row_normalize_graph");
+    //connect isolated nodes and row normalize A  
+    std::vector<MKL_INT> isolated;
+    bool isolated_node = false ;
+    for (MKL_INT i = 0; i < n; ++i) {
+        if (graph_row_sum[i] == 0.0) {
+            isolated.push_back(i);
+            isolated_node = true;
+        }   
+    }
+    printf("num of isolated %ld\n", isolated.size());
 
+    sparse_matrix_t graph_connected = nullptr;
+    if(isolated_node) {
+        printf("connecting isolated nodes\n");
+
+        std::vector<double> edge_list;
+        edge_list.reserve(isolated.size() * n * 2);
+        for (MKL_INT i : isolated) {
+            for (MKL_INT j = 0; j < n; ++j) {
+                edge_list.push_back(static_cast<double>(i));
+                edge_list.push_back(static_cast<double>(j));
+            }
+            // update row sum directly
+            graph_row_sum[i] = static_cast<double>(n);
+        }
+        // build CSR matrix (values are implicitly 1.0 inside)
+        sparse_matrix_t add_mat = make_mat_from_edgelist(edge_list, n, n);
+        //add add_mat to original graph
+        status = mkl_sparse_d_add(SPARSE_OPERATION_NON_TRANSPOSE,graph, 1.0, add_mat, &graph_connected);
+        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_add failed in get_batch_rwr_scores");
+        // mkl_sparse_optimize(graph_connected);
+        mkl_sparse_destroy(add_mat);
+
+        // //update graph_row_sum
+        status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph_connected, descr, all_ones.data(), (double) 1.0, graph_row_sum.data());
+        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
+    }
+    else {
+        graph_connected = graph;
+    }
+    
     MKLCSC Dinv = make_diag_csc(graph_row_sum, n, n, true);
     sparse_matrix_t graph_norm = nullptr;
     mkl_sparse_optimize(Dinv.spMat);
-    mkl_sparse_optimize(graph);
-    status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Dinv.spMat, graph, &graph_norm);
+    mkl_sparse_optimize(graph_connected);
+    status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Dinv.spMat, graph_connected, &graph_norm);
     if (status != SPARSE_STATUS_SUCCESS) { std::cerr << "error : mkl_sparse_spmm failed" << std::endl; }
     sparse_matrix_t graph_norm_csr;
     mkl_sparse_convert_csr(graph_norm, SPARSE_OPERATION_NON_TRANSPOSE, &graph_norm_csr);
@@ -467,7 +524,6 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
     std::vector<double> temp3(n1 * n2);
     std::vector<double> diff(n1 * n2);
     std::vector<double> diff_abs(n1 * n2);
-
     for (int i = 0; i < max_iters; ++i) {
         out_cross_dist_old = out_cross_dist;
         //second term computation
@@ -569,30 +625,38 @@ std::vector<double> minb(const std::vector<double>& H_in, int n1, int n2, double
 
 // minaa(H) = mina(H - min(H,dim=0), eps) + min(H,dim=0)
 std::vector<double> minaa(const std::vector<double>& H, int n1, int n2, double epsilon) {
-    // const int N = n1 * n2;
+    auto time_0 = std::chrono::high_resolution_clock::now();    
     std::vector<double> H_shifted(n1 * n2);
     std::vector<double> col_min(n2);
-
-    for (int j = 0; j < n2; ++j) {
-        const double* col = &H[j * n1];
-        double m = col[0];
-        for (int i = 1; i < n1; ++i) {
-            if (col[i] < m) m = col[i];
-        }
-        col_min[j] = m;
-    }
-
-    // build matrix M = 1_n1 * col_min^T (n1 x n2)
     std::vector<double> ones_n1(n1, 1.0);
     std::vector<double> M(n1 * n2);
+    auto time_1 = std::chrono::high_resolution_clock::now();    
+    for (int j = 0; j < n2; ++j) {
+        const double* col = &H[(size_t)j * n1];
+        // index of min |value| in column j
+        int idx = cblas_idamin(n1, col, 1);
+        // col_min_idx[j] = idx;   // 0-based index
+        col_min[j] = col[idx];
+    }
+    auto time_2 = std::chrono::high_resolution_clock::now();    
+    // build matrix M = 1_n1 * col_min^T (n1 x n2)
+    
     cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, ones_n1.data(), n1, col_min.data(), 1, 0.0, M.data(), n1);
     // H_shifted = H - M
     mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, H.data(), n1, -1.0, M.data(), n1, H_shifted.data(), n1);
+    auto time_3= std::chrono::high_resolution_clock::now();    
     // mina on H_shifted
     std::vector<double> res = mina(H_shifted, n1, n2, epsilon); // size n2
+    auto time_4= std::chrono::high_resolution_clock::now();    
     // add column minima back: res += col_min
     cblas_daxpy(n2, 1.0, col_min.data(), 1, res.data(), 1);
-
+    auto time_5= std::chrono::high_resolution_clock::now();    
+    std::cout << "in minaa init : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+    " col_min compute : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+    " compute H_shifted(Cs mat) : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << 
+    " mina : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << 
+    " add row_min after minb : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_5-time_4).count() << 
+    " ms" << std::endl;
     return res;  // shape: (1 x n2)
 }
 
@@ -601,32 +665,54 @@ std::vector<double> minaa(const std::vector<double>& H, int n1, int n2, double e
 // minbb(H) = minb(H - min(H,dim=1), eps) + min(H,dim=1)
 std::vector<double> minbb(const std::vector<double>& H, int n1, int n2, double epsilon, int it) {
     // const int N = n1 * n2;
+    auto time_0 = std::chrono::high_resolution_clock::now();        
     std::vector<double> H_shifted(n1 * n2);
     std::vector<double> row_min(n1);
+    // std::vector<double> ones_n2(n2, 1.0);
+    // std::vector<double> M(n1 * n2);
 
+    auto time_1 = std::chrono::high_resolution_clock::now();    
+    #pragma omp parallel for    
     for (int i = 0; i < n1; ++i) {
-        double m = H[i + 0 * n1];          // first column, row i
-        for (int j = 1; j < n2; ++j) {
-            double v = H[i + j * n1];      // row i, col j (col-major)
-            if (v < m) m = v;
-        }
-        row_min[i] = m;
+        const double* row = &H[i];   // start of row i
+        // index of min |value| across columns  - cblas_idamin is absolute min - is all values in H positive?
+        int idx = cblas_idamin(n2, row, n1);  // stride = n1
+        // correct element
+        row_min[i] = row[idx * n1];
     }
-  
+    // #pragma omp parallel for
+    // for (int i = 0; i < n1; ++i) {
+    //     const double* row = H + i;
+    //     int idx = cblas_idamin(n2, row, n1);   // stride = n1
+    //     row_min[i] = row[idx * n1];
+    // }
+    auto time_2 = std::chrono::high_resolution_clock::now();        
     // build matrix M = row_min * 1_n2^T  (n1 x n2)
-    std::vector<double> ones_n2(n2, 1.0);
-    std::vector<double> M(n1 * n2);
+    // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, row_min.data(), n1, ones_n2.data(), 1, 0.0, M.data(), n1);
 
-    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, row_min.data(), n1, ones_n2.data(), 1, 0.0, M.data(), n1);
-
-    // H_shifted = H - M
-    // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, H.data(), n2, -1.0, M.data(), n2, H_shifted.data(), n2);
-    mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, H.data(), n1, -1.0, M.data(), n1, H_shifted.data(), n1);
+    // // H_shifted = H - M
+    // // mkl_domatadd('R', 'N', 'N', n1, n2, 1.0, H.data(), n2, -1.0, M.data(), n2, H_shifted.data(), n2);
+    // mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, H.data(), n1, -1.0, M.data(), n1, H_shifted.data(), n1);
+    #pragma omp parallel for
+    for (int j = 0; j < n2; ++j) {
+        const double* Hcol = H.data() + j * n1;
+        double* Hscol = H_shifted.data() + j * n1;
+        cblas_dcopy(n1, Hcol, 1, Hscol, 1);
+        cblas_daxpy(n1, -1.0, row_min.data(), 1, Hscol, 1);
+    }
+    auto time_3 = std::chrono::high_resolution_clock::now(); 
     // minb on shifted
     std::vector<double> res = minb(H_shifted, n1, n2, epsilon, it); // size n1
+    auto time_4 = std::chrono::high_resolution_clock::now(); 
     // add row minima back: res += row_min
     cblas_daxpy(n1, 1.0, row_min.data(), 1, res.data(), 1);
-
+    auto time_5 = std::chrono::high_resolution_clock::now(); 
+    std::cout << "in minbb init : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+    " row_min compute : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+    " compute H_shifter(Cs mat) : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << 
+    " minb : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << 
+    " add row_min after minb : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_5-time_4).count() << 
+    " ms" << std::endl;
     return res;  // shape: (n1 x 1)
 }
 
@@ -638,51 +724,43 @@ std::vector<double> compute_L_fixed( const std::vector<double>& intra_dist1, con
     std::vector<double> A2(intra_dist2.size());
     vdMul(n1 * n1, intra_dist1.data(), intra_dist1.data(), A1.data()); // A1 = intra_dist1^2
     vdMul(n2 * n2, intra_dist2.data(), intra_dist2.data(), A2.data()); // A2 = intra_dist2^2
-
     // First term: (intra_dist1^2) @ r @ one_vec_n2^T
     // v1 = A1 * r   (n1 x 1)
     std::vector<double> v1(n1);
     cblas_dgemv(CblasColMajor, CblasNoTrans, n1, n1, 1.0, A1.data(), n1, r.data(), 1, 0.0, v1.data(), 1);
-
     // term1 = v1 * one_vec_n2^T  (outer product, n1 x n2)
-    std::vector<double> term1(n1 * n2);
+    std::vector<double> L_fixed(n1 * n2);
     // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, 1, 1.0, v1.data(), n1, one_vec_n2.data(), n2, 0.0, term1.data(), n1);         // n1 x n2
-    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, v1.data(), n1, one_vec_n2.data(), 1, 0.0, term1.data(), n1);         // n1 x n2
-
+    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, v1.data(), n1, one_vec_n2.data(), 1, 0.0, L_fixed.data(), n1);         // n1 x n2
     // Second term: one_vec_n1 @ c @ (intra_dist2^2)^T
     // B0 = one_vec_n1 * c  (n1 x n2)
     std::vector<double> B0(n1 * n2);
     cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, c.data(), 1, 0.0, B0.data(), n1);            // n1 x n2
-
     // term2 = B0 @ (A2)^T   where A2 = intra_dist2^2, size n2 x n2
     std::vector<double> term2(n1 * n2);
-    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, n2, 1.0, B0.data(), n1, A2.data(), n2, 0.0, term2.data(), n1);         // n1 x n2
-
+    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, n2, 1.0, B0.data(), n1, A2.data(), n2, 1.0, L_fixed.data(), n1);         // n1 x n2
     // 4) L_fixed = term1 + term2
-    std::vector<double> L_fixed = term1;
-    cblas_daxpy(n1 * n2, 1.0, term2.data(), 1, L_fixed.data(), 1);
+    // std::vector<double> L_fixed = term1;
+    // cblas_daxpy(n1 * n2, 1.0, term2.data(), 1, L_fixed.data(), 1);
 
     // for(int i=0; i<100; i++) { printf(" %.6f ", L_fixed[i]);}
     return L_fixed; // n1 x  n2, col-major
 }
 
-
-
 std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, int n1, int n2,
     std::vector<double> cross_dist, std::vector<double> intra_dist1, std::vector<double> intra_dist2, int inner_iters, int outer_iters,
     double lambda_n, double lambda_a, double lambda_p, double lambda_e_in, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs, 
     const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs_test, std::vector<double> anchors_test) {
-    sparse_matrix_t row_norm_adj1 = row_normalize_graph(graph1_py, n1);
-    sparse_matrix_t row_norm_adj2 = row_normalize_graph(graph2_py, n2);
-    std::vector<double> adj1_dense = sparse_to_dense_colmajor(row_norm_adj1, n1, n1);
-    std::vector<double> adj2_dense = sparse_to_dense_colmajor(row_norm_adj2, n2, n2);
-    // compare(adj1_dense, data_path + "/row_norm_adj1.txt", "row_norm_adj1");
-    // compare(adj2_dense, data_path + "/row_norm_adj2.txt", "row_norm_adj2");
+
+    print_num_zeros(intra_dist1, "intra_dist1");
+    print_num_zeros(intra_dist2, "intra_dist2");
+    print_num_zeros(cross_dist, "cross_dist");
+    
+    auto time_0 = std::chrono::high_resolution_clock::now();
     double lambda_total = lambda_n + lambda_a + lambda_p;
     double lambda_e = lambda_e_in * n1 * n2;
     std::vector<double> one_vec_n1(n1, 1.0);
     std::vector<double> one_vec_n2(n2, 1.0);
-    
     std::vector<double> a  = one_vec_n1;
     std::vector<double> r  = one_vec_n1;
     cblas_dscal(n1, 1.0 / static_cast<double>(n1), a.data(), 1);
@@ -692,49 +770,60 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
     cblas_dscal(n2, 1.0 / static_cast<double>(n2), b.data(), 1);
     cblas_dscal(n2, 1.0 / static_cast<double>(n2), c.data(), 1);
     std::vector<double> S(n1 * n2, 1.0 / static_cast<double>(n1 * n2));      // S = (1/(n1*n2)) * 1_n1 * 1_n2^T
-
-    std::vector<double> H(n1 * n2, 1e-6);
-    init_H_with_anchors(H, n1, n2, anchor_pairs);
-
-    std::vector<double> L_fixed = compute_L_fixed(intra_dist1, intra_dist2, r, c, one_vec_n1, one_vec_n2, n1, n2);
-    // compare(L_fixed, data_path + "/L_fixed.txt.txt", "L_fixed");
-
+    std::vector<double> buffer(n1*n2);
     std::vector<double> S_old(n1*n2);
-    std::vector<double> A_S(n1*n2);
     std::vector<double> A2T_term(n1*n2);
     std::vector<double> L(n1*n2);
     std::vector<double> C(n1*n2);
     std::vector<double> C_old(n1*n2);
     std::vector<double> Cost(n1*n2);
     std::vector<double> S_log(n1*n2);
-    std::vector<double> diff(n1*n2), diff_abs(n1*n2);
+    std::vector<double> diff_abs(n1*n2);
     std::vector<double> A_mat(n1*n2), B_mat(n1*n2, 1.0 / n2);
-    std::vector<double> RC_mat(n1*n2), C_mat(n1*n2);
+    std::vector<double> RC_mat(n1*n2);
     std::vector<double> A1T_S(n1 * n2);      // n1 x n2
-    std::vector<double> A1T_S_T(n2 * n1);
-    std::vector<double> A2_A1T_S_T(n2 * n1);
     std::vector<double> RW_term(n1*n2);
-    std::vector<double> tmp_n1n2(n1*n2);
-    std::vector<double> tmp_n1n2_2(n1*n2);
-    std::vector<double> tmp_n2n1(n1*n2);
-
-    std::vector<double> H_log = H;
+    std::vector<double> H_log(n1 * n2, 1e-6);
+    init_H_with_anchors(H_log, n1, n2, anchor_pairs);
     vdLn(n1 * n2, H_log.data(), H_log.data());
-
     bool has_C_old = false;
+
+    auto time_1 = std::chrono::high_resolution_clock::now();
+    std::cout << "initialization in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() << " ms" << std::endl;
+
+    sparse_matrix_t row_norm_adj1 = row_normalize_graph(graph1_py, n1);
+    sparse_matrix_t row_norm_adj2 = row_normalize_graph(graph2_py, n2);
+
+    auto time_2 = std::chrono::high_resolution_clock::now();
+    std::cout << "row normalizing graphs in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << " ms" << std::endl;
+    // std::vector<double> adj1_dense = sparse_to_dense_colmajor(row_norm_adj1, n1, n1);
+    // std::vector<double> adj2_dense = sparse_to_dense_colmajor(row_norm_adj2, n2, n2);
+    // compare(adj1_dense, data_path + "/row_norm_adj1.txt", "row_norm_adj1");
+    // compare(adj2_dense, data_path + "/row_norm_adj2.txt", "row_norm_adj2");
+    std::vector<double> L_fixed = compute_L_fixed(intra_dist1, intra_dist2, r, c, one_vec_n1, one_vec_n2, n1, n2);
+    auto time_3 = std::chrono::high_resolution_clock::now();
+    std::cout << "L_fixed computation in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << " ms" << std::endl;
+    // compare(L_fixed, data_path + "/L_fixed.txt.txt", "L_fixed");
+    
+    auto L_compute_time=0, C_compute_time=0, Cost_compute_time=0, before_minaa=0, compute_minaa=0, between_minaa_minbb=0, compute_minbb=0, update_S=0, inner_loop=0;
 
     // outer_iters = 2;
     for (int it = 0; it < outer_iters; ++it) {
-
+        printf("----- outer iterration %d ----\n", it);
+        auto time_iter_0 = std::chrono::high_resolution_clock::now();
         cblas_dcopy(n1 * n2, S.data(), 1, S_old.data(), 1);
+        auto dgemm_0 = std::chrono::high_resolution_clock::now();
         // A_S = intra_dist1 @ S   (n1 x n1) @ (n1 x n2) = (n1 x n2)
-        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n1, 1.0, intra_dist1.data(), n1, S.data(), n1, 0.0, A_S.data(), n1);         //col major
-
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n1, 1.0, intra_dist1.data(), n1, S.data(), n1, 0.0, buffer.data(), n1);         //col major
         // A2T_term = A_S @ intra_dist2^T   (n1 x n2) @ (n2 x n2) = (n1 x n2)
-        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, n2, 1.0, A_S.data(), n1, intra_dist2.data(), n2, 0.0, A2T_term.data(), n1);           //col major
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, n2, 1.0, buffer.data(), n1, intra_dist2.data(), n2, 0.0, A2T_term.data(), n1);           //col major
+        auto dgemm_1 = std::chrono::high_resolution_clock::now();
+        std::cout << "2dgemm dist1*S*dist2 : " << std::chrono::duration_cast<std::chrono::milliseconds>(dgemm_1-dgemm_0).count() << " ms" << std::endl;
         // L = L_fixed - 2 * A2T_term
         cblas_dcopy(n1 * n2, L_fixed.data(), 1, L.data(), 1);
         cblas_daxpy(n1 * n2, -2.0, A2T_term.data(), 1, L.data(), 1);
+        auto time_L_done = std::chrono::high_resolution_clock::now();
+        L_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_L_done - time_iter_0).count();
         // compare(L, data_path + "/L_outer_iter_" + std::to_string(it) + ".txt", "L_iter_"+ std::to_string(it));
         // ---- C = cross_dist + lambda_e * L - lambda_n * log(row_norm_adj1.T @ S @ row_norm_adj2) - lambda_a * log(H) ----
         // Start from cross_dist
@@ -746,31 +835,38 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         // Compute RW_term = row_norm_adj1.T @ S @ row_norm_adj2 (n1 x n2)
         // A1T_S = row_norm_adj1.T @ S
         // op(A) = TRANSPOSE, A: n1 x n1, S: n1 x n2 -> A1T_S: n1 x n2
-        // matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
-        // sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, S.data(), n2, n1, 0.0, A1T_S.data(), n1);
-        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A1^T S) failed");
-        cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, n1, n2, n1, 1.0, adj1_dense.data(), n1, S.data(), n1, 0.0, A1T_S.data(), n1);
+        matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
+        auto spmm_0 = std::chrono::high_resolution_clock::now();
+        sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, S.data(), n2, n1, 0.0, A1T_S.data(), n1);
+        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A1^T S) failed");
+        auto spmm_0_1 = std::chrono::high_resolution_clock::now();
+        // cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, n1, n2, n1, 1.0, adj1_dense.data(), n1, S.data(), n1, 0.0, A1T_S.data(), n1);
 
         // A1T_S_T = (A1T_S)^T (n2 x n1)
-        mkl_domatcopy('C', 'T', n1, n2, 1.0, A1T_S.data(), n1, A1T_S_T.data(), n2);    //col major
+        // mkl_domatcopy('C', 'T', n1, n2, 1.0, A1T_S.data(), n1, A1T_S_T.data(), n2);    //col major
 
         // st = mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_ROW_MAJOR, A1T_S_T.data(), n1, n1, 0.0, A2_A1T_S_T.data(), n1);  //row major
         // st = mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_COLUMN_MAJOR, A1T_S_T.data(), n1, n2, 0.0, A2_A1T_S_T.data(), n2);     // col major
         // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A2 A1^T S^T) failed");
-        cblas_dgemm( CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n2, 1.0, A1T_S.data(), n1, adj2_dense.data(), n2, 0.0, RW_term.data(), n1);
+        mkl_sparse_optimize(row_norm_adj2);
+        auto spmm_0_2 = std::chrono::high_resolution_clock::now();
+        mkl_domatcopy('C', 'T', n1, n2, 1.0, A1T_S.data(), n1, buffer.data(), n2); //transpose
+        auto spmm_0_3 = std::chrono::high_resolution_clock::now();
+        std::vector<double> temp(n1*n2);
+        auto spmm_0_4 = std::chrono::high_resolution_clock::now();
+        mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE,  1.0, row_norm_adj2, descr, SPARSE_LAYOUT_COLUMN_MAJOR, buffer.data(), n1, n2, 0.0, temp.data(), n2);      //spmm
+        auto spmm_0_5 = std::chrono::high_resolution_clock::now();
+        mkl_domatcopy( 'C', 'T', n2, n1, 1.0, temp.data(), n2, RW_term.data(), n1);
+        auto spmm_1 = std::chrono::high_resolution_clock::now();
+        std::cout << "2spmm G1*S*G2 : " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_1-spmm_0).count() << " ms" << std::endl;
+        std::cout << "2spmm G1*S*G2 ---- 1st spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_1-spmm_0).count() <<
+        "sparse optimize " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_2-spmm_0_1).count() << 
+        "mat copytrans " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_3-spmm_0_2).count() << 
+        "temp init " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_4-spmm_0_3).count() << 
+        "2nd spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_5-spmm_0_4).count() << 
+        "mat copytrans " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_1-spmm_0_5).count() << " ms" << std::endl;
 
-        // RW_term = (A2_A1T_S_T)^T  (n1 x n2)
-        // mkl_domatcopy('C', 'T', n2, n1, 1.0, A2_A1T_S_T.data(), n2, RW_term.data(), n1);
-        
-        // double mn = RW_term[0], mx = RW_term[0];
-        // int num_le0 = 0;
-        // for (int i = 0; i < n1*n2; ++i) {
-        //     mn = std::min(mn, RW_term[i]);
-        //     mx = std::max(mx, RW_term[i]);
-        //     if (RW_term[i] <= 0.0) num_le0++;
-        // }
-        // std::cerr << "RW_term prelog min=" << mn << " max=" << mx
-        //         << " count<=0=" << num_le0 << "\n";
+        // cblas_dgemm( CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n2, 1.0, A1T_S.data(), n1, adj2_dense.data(), n2, 0.0, RW_term.data(), n1);
 
         // log(RW_term)
         vdLn(n1*n2, RW_term.data(), RW_term.data());
@@ -778,6 +874,8 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         cblas_daxpy(n1*n2, -lambda_n, RW_term.data(), 1, C.data(), 1);
         // C -= lambda_a * log(H)  (H_log is precomputed)
         cblas_daxpy(n1*n2, -lambda_a, H_log.data(), 1, C.data(), 1);
+        auto time_C_done = std::chrono::high_resolution_clock::now();
+        C_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_C_done - time_L_done).count();
 
         // ---- C_old / W check ----
         if (!has_C_old) {
@@ -806,32 +904,52 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         // std::vector<double> b_col(n2, 1.0 / n2);   
         std::vector<double> a_row(n2); 
         std::vector<double> b_col(n1); 
+        auto time_iter_1 = std::chrono::high_resolution_clock::now();
+        // std::cout << "Updating C before optimizing a and b with inner loop time : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_1-time_iter_0).count() << " ms" << std::endl;
+        Cost_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_1 - time_C_done).count();
         // ---- Sinkhorn inner iterations ----
         for (int j = 0; j < inner_iters; ++j) {
-            printf(" \n ---- outer iter %d --- inner iter %d --- \n", it, j);
+            // printf(" \n ---- outer iter %d --- inner iter %d --- \n", it, j);
             // Cost - b  (b is n1 x 1, broadcast over columns)
+            auto t_0 = std::chrono::high_resolution_clock::now() ;
             if( j > 0 ) {
                 // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
                 cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
             }
-
-            // tmp_n1n2 = Cost - B_mat
-            mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, B_mat.data(), n1, tmp_n1n2.data(), n1);
-
-            a_row = minaa(tmp_n1n2, n1, n2, lambda_total);
-           
+            auto t_1 = std::chrono::high_resolution_clock::now() ;
+            // buffer = Cost - B_mat
+            mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, B_mat.data(), n1, buffer.data(), n1);
+            auto t_2 = std::chrono::high_resolution_clock::now() ;
+            before_minaa += std::chrono::duration_cast<std::chrono::milliseconds>(t_2 - t_0).count();
+            a_row = minaa(buffer, n1, n2, lambda_total);
+            auto t_3 = std::chrono::high_resolution_clock::now() ;
+            compute_minaa += std::chrono::duration_cast<std::chrono::milliseconds>(t_3 - t_2).count();
             // Cost - a  (a is 1 x n2, broadcast over rows)
             // A_mat = 1_n1 * a_row^T (n1 x n2)
             // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a_row.data(), 1, 0.0, A_mat.data(), n1);
             cblas_dgemm( CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a_row.data(), 1, 0.0, A_mat.data(), n1); 
+            auto t_4 = std::chrono::high_resolution_clock::now() ;
+            // buffer = Cost - A_mat
+            mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, A_mat.data(), n1, buffer.data(), n1);
+            auto t_5 = std::chrono::high_resolution_clock::now() ;
+            between_minaa_minbb += std::chrono::duration_cast<std::chrono::milliseconds>(t_5 - t_3).count();
+            // b_col = minbb(buffer, lambda_total)  (length n1)
+            b_col = minbb(buffer, n1, n2, lambda_total, j);
+            auto t_6 = std::chrono::high_resolution_clock::now() ;
+            compute_minbb += std::chrono::duration_cast<std::chrono::milliseconds>(t_6 - t_5).count();
+            // std::cout << "inner iteration " << j << " times : " 
+            // << std::chrono::duration_cast<std::chrono::milliseconds>(t_1-t_0).count() << " " 
+            // << std::chrono::duration_cast<std::chrono::milliseconds>(t_2-t_1).count() << " "
+            // << std::chrono::duration_cast<std::chrono::milliseconds>(t_3-t_2).count() << " "
+            // << std::chrono::duration_cast<std::chrono::milliseconds>(t_4-t_3).count() << " "
+            // << std::chrono::duration_cast<std::chrono::milliseconds>(t_5-t_4).count() << " " 
+            // << std::chrono::duration_cast<std::chrono::milliseconds>(t_6-t_5).count() << " " << std::endl;
 
-            // tmp_n1n2 = Cost - A_mat
-            mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, Cost.data(), n1, -1.0, A_mat.data(), n1, tmp_n1n2.data(), n1);
-
-            // b_col = minbb(tmp_n1n2, lambda_total)  (length n1)
-            b_col = minbb(tmp_n1n2, n1, n2, lambda_total, j);
         }
-
+        auto time_iter_2 = std::chrono::high_resolution_clock::now();        
+        // std::cout << "optimizing a and b with inner loop time : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_2-time_iter_1).count() << " ms" << std::endl;
+        inner_loop += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_2 - time_iter_1).count();
+        // printf("here  -- 3\n");
         // compare(a_row, data_path + "/a_outer_iter_" + std::to_string(it) + ".txt", "a_iter_"+ std::to_string(it));
         // compare(b_col, data_path + "/b_outer_iter_" + std::to_string(it) + ".txt", "b_iter_"+ std::to_string(it));
 
@@ -840,45 +958,60 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, a_row.data(), 1, 0.0, A_mat.data(), n1);
         // B_mat = b_col * 1_n2^T
         cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, b_col.data(), n1, one_vec_n2.data(), 1, 0.0, B_mat.data(), n1);
-        // tmp_n1n2 = A_mat + B_mat
-        mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, A_mat.data(), n1, 1.0, B_mat.data(), n1, tmp_n1n2.data(), n1);
+        // buffer = A_mat + B_mat
+        mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, A_mat.data(), n1, 1.0, B_mat.data(), n1, buffer.data(), n1);
 
-        // tmp_n1n2 = tmp_n1n2 - Cost
-        mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, tmp_n1n2.data(), n1, -1.0, Cost.data(), n1, tmp_n1n2.data(), n1);
+        // buffer = buffer - Cost
+        mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, buffer.data(), n1, -1.0, Cost.data(), n1, buffer.data(), n1);
    
-        // tmp_n1n2 = tmp_n1n2 / lambda_total   
-        cblas_dscal(n1*n2, 1.0 / lambda_total, tmp_n1n2.data(), 1);
+        // buffer = buffer / lambda_total   
+        cblas_dscal(n1*n2, 1.0 / lambda_total, buffer.data(), 1);
 
-        // tmp_n1n2 = exp(tmp_n1n2)
-        vdExp(n1*n2, tmp_n1n2.data(), tmp_n1n2.data());
+        // buffer = exp(buffer)
+        vdExp(n1*n2, buffer.data(), buffer.data());
 
         // RC_mat = r * 1_n2^T
         cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, r.data(), n1, one_vec_n2.data(), 1, 0.0, RC_mat.data(), n1);
+        // buffer = buffer ⊙ RC_mat
+        vdMul(n1*n2, buffer.data(), RC_mat.data(), buffer.data());
         // C_mat = 1_n1 * c^T
-        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, c.data(), 1, 0.0, C_mat.data(), n1);
-    
-        // tmp_n1n2 = tmp_n1n2 ⊙ RC_mat
-        vdMul(n1*n2, tmp_n1n2.data(), RC_mat.data(), tmp_n1n2.data());
-        // tmp_n1n2 = tmp_n1n2 ⊙ C_mat
-        vdMul(n1*n2, tmp_n1n2.data(), C_mat.data(), tmp_n1n2.data());
+        // cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, c.data(), 1, 0.0, C_mat.data(), n1);
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, 1, 1.0, one_vec_n1.data(), n1, c.data(), 1, 0.0, RC_mat.data(), n1);
+        // buffer = buffer ⊙ C_mat
+        // vdMul(n1*n2, buffer.data(), C_mat.data(), buffer.data());
+        vdMul(n1*n2, buffer.data(), RC_mat.data(), buffer.data());
 
-        // S = 0.95 * tmp_n1n2 + 0.05 * S_old
-        cblas_dcopy(n1*n2, tmp_n1n2.data(), 1, S.data(), 1);
+        // S = 0.95 * buffer + 0.05 * S_old
+        cblas_dcopy(n1*n2, buffer.data(), 1, S.data(), 1);
         cblas_dscal(n1*n2, 0.95, S.data(), 1);
         cblas_daxpy(n1*n2, 0.05, S_old.data(), 1, S.data(), 1);
 
-        // diff_S = sum |S - S_old|
-        mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, S.data(), n1, -1.0, S_old.data(), n1, diff.data(), n1);
-        vdAbs(n1*n2, diff.data(), diff_abs.data());
-        double diff_S = cblas_dasum(n1*n2, diff_abs.data(), 1);
-        printf("inner iter %d and diff of S %.6f\n", it, diff_S);
+        auto time_iter_3 = std::chrono::high_resolution_clock::now();        
+        // std::cout << "updating S after optimizing a and b time : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_3-time_iter_2).count() << " ms" << std::endl;
+        update_S += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_3 - time_iter_2).count();
+        
+        // //diff_S = sum |S - S_old|
+        // mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, S.data(), n1, -1.0, S_old.data(), n1, buffer.data(), n1);
+        // vdAbs(n1*n2, buffer.data(), diff_abs.data());
+        // double diff_S = cblas_dasum(n1*n2, diff_abs.data(), 1);
+        // printf("inner iter %d and diff of S %.6f\n\n", it, diff_S);
+
+        
         // double maxS = S[0], minS = S[0];
         // for (int i = 1; i < n1 * n2; ++i) {
         //     if (S[i] > maxS) maxS = S[i];
         //     if (S[i] < minS) minS = S[i];
         // }
         // std::cerr << "Before exp: minS = " << minS << ", maxS = " << maxS << "\n";
+        // if (it == outer_iter-1) 
+        //     std::cout << "total inner iteration time " << std::chrono::duration_cast<std::chrono::milliseconds>(total_inner).count() << " ms" << std::endl;
     }
+    auto time_4 = std::chrono::high_resolution_clock::now();
+    std::cout << "total time of 10 outer iterations : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << " ms" << std::endl;
+    
+    std::cout << " L_compute_time : " << L_compute_time <<  " C_compute_time : " << C_compute_time <<  " Cost_compute_time : " << Cost_compute_time <<  
+    " before_mina : " << before_minaa << " mina : " << compute_minaa << " between_mina_minb : " << between_minaa_minbb << " minb : " << compute_minbb << " update_S : " << update_S << " ms" << std::endl;
+    
     std::cout << "done con_prox_pt_opt_init" << std::endl;
 
     return S;

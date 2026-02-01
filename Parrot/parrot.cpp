@@ -3,6 +3,7 @@
 #ifdef MKL_AVAILABLE
 #include <mkl.h>
 #include <mkl_vml.h>
+#include <omp.h>
 #endif
 #include <string>
 #include <sstream>
@@ -50,7 +51,12 @@ int main(int argc, char* argv[]){
         data_path = argv[1];
     }
     load_config(data_path, g1_num_nodes, g2_num_nodes, use_attr, inner_iters, outer_iters);
-    
+    printf("MKL threads: %d\n", mkl_get_max_threads());
+    printf("MKL dynamic: %d\n", mkl_get_dynamic());
+    // printf("MKL threading layer: %d\n", mkl_get_threading_layer());
+    printf("OMP max threads: %d\n", omp_get_max_threads());
+    printf("OMP in parallel region? %d\n", omp_in_parallel());
+
     std::vector<double> g1_edgelist = readFileToVector(data_path + "/graph1.txt");
     sparse_matrix_t graph1_py = make_mat_from_edgelist(g1_edgelist, g1_num_nodes, g1_num_nodes);        //row major csr
     std::vector<double> g2_edgelist = readFileToVector(data_path + "/graph2.txt");
@@ -68,23 +74,18 @@ int main(int argc, char* argv[]){
     int l = anchor_pairs.first.size();
     printf("graph1 #nodes %d -- graph2 #nodes %d -- use node attributes %d --- # of anchor links %ld\n\n", g1_num_nodes, g2_num_nodes, use_attr, anchor_pairs.first.size());
 
-    // time_t t0 = std::time(NULL);
     auto time_0 = std::chrono::high_resolution_clock::now();
     std::vector<double>  g1_rwr = get_batch_rwr_scores(graph1_py, anchor_pairs.first, g1_num_nodes, 0.15, 100, true );
-    // time_t t1 = std::time(NULL);
     auto time_1 = std::chrono::high_resolution_clock::now();
-    std::vector<double>  g2_rwr = get_batch_rwr_scores(graph2_py, anchor_pairs.second, g2_num_nodes, 0.15, 100, true );
-    // time_t t2 = std::time(NULL);
-    auto time_2 = std::chrono::high_resolution_clock::now();
-    // printf("graph1 rwr computer in %d sec and graph2 rwr computed in %d sec\n", t1-t0, t2-t1);
     std::cout << "graph1 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() << " ms" << std::endl;
+    std::vector<double>  g2_rwr = get_batch_rwr_scores(graph2_py, anchor_pairs.second, g2_num_nodes, 0.15, 100, true );
+    auto time_2 = std::chrono::high_resolution_clock::now();
     std::cout << "graph2 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << " ms" << std::endl;
 
     // compare(g1_rwr, data_path + "/rwr_emb1.txt", "g1_rwr");
     // compare(g2_rwr, data_path + "/rwr_emb2.txt", "g2_rwr");
-    
+    auto time_3 = std::chrono::high_resolution_clock::now();
     std::vector<double> cross_rwr_dist = get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l);
-    printf("cross_rwr_dist   computed size of it %ld\n", cross_rwr_dist.size());
 
     //copy rwr dist to attr dist because we dont have attributes
     std::vector<double> cross_attr_dist;
@@ -98,6 +99,9 @@ int main(int argc, char* argv[]){
     cblas_daxpy(cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_attr_dist.data(), 1);
     //make the anchor links cross rwr dist zero
     anchor_cost_zero(cross_attr_dist, g1_num_nodes, g2_num_nodes, anchor_pairs, 0.0);
+    auto time_5 = std::chrono::high_resolution_clock::now();
+    std::cout << "cross_rwr_dist computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_5-time_3).count() << " ms" << std::endl;
+    // printf("cross_rwr_dist size is %ld\n", cross_rwr_dist.size());
 
     //compute intra network embedding and mask it with graph using spmm
     std::vector<double> intra_rwr_dist1, intra_rwr_dist2;
@@ -107,6 +111,7 @@ int main(int argc, char* argv[]){
     else {
         intra_rwr_dist1 = get_normalized_neg_exp_dist (g1_rwr, g1_rwr, g1_num_nodes, g1_num_nodes, l);
     }
+    
     std::vector<double> intra_rwr_dist1_masked(g1_num_nodes * g1_num_nodes);                // intra_rwr_dist1_masked = graph1_adj * intra_rwr_dist1
     {
         std::vector<double> graph1_py_dense(g1_num_nodes * g1_num_nodes, 0.0);
@@ -123,6 +128,9 @@ int main(int argc, char* argv[]){
         }
         vdMul(g1_num_nodes*g1_num_nodes, graph1_py_dense.data(), intra_rwr_dist1.data(), intra_rwr_dist1_masked.data());
     }
+    auto time_6 = std::chrono::high_resolution_clock::now();
+    std::cout << "intra_rwr_dist graph1 completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_6-time_5).count() << " ms" << std::endl;
+
     // printf("intra_rwr_dist1_masked computed\n");
     // compare(intra_rwr_dist1_masked, data_path + "/intra_dist1.txt", "intra_rwr_dist1_masked");
 
@@ -149,17 +157,24 @@ int main(int argc, char* argv[]){
         }
         vdMul(g2_num_nodes * g2_num_nodes, graph2_py_dense.data(), intra_rwr_dist2.data(), intra_rwr_dist2_masked.data());
     }
+    auto time_7 = std::chrono::high_resolution_clock::now();
+    std::cout << "intra_rwr_dist graph2 completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_7-time_6).count() << " ms" << std::endl;
+
     // printf("intra_rwr_dist2_masked computed\n");
     // compare(intra_rwr_dist2_masked, data_path + "/intra_dist2.txt", "intra_rwr_dist2_masked");
 
     //Compute cross_dist
     // std::vector<double> cross_dist = get_product_rwr_mat(graph1_py, graph2_py, cross_rwr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75); 
+    // print_sparse_matrix_info(graph1_py, "graph1_py");
+    // print_sparse_matrix_info(graph2_py, "graph2_py");
     std::vector<double> cross_dist = get_product_rwr_mat(graph1_py, graph2_py, cross_attr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75); 
+    auto time_8 = std::chrono::high_resolution_clock::now();
+    std::cout << "cross_dist computation completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_8-time_7).count() << " ms" << std::endl;
     // printf("cross_dist computed\n");
     // compare(cross_dist, data_path + "/cross_dist.txt", "cross_dist");
-    
     std::vector<double> S = con_prox_pt_opt(data_path, graph1_py, graph2_py, g1_num_nodes, g2_num_nodes, cross_dist, intra_rwr_dist1_masked, intra_rwr_dist2_masked, inner_iters, outer_iters, 5e-3, 5e-4, 5e-4, 1e-5, anchor_pairs, anchor_pairs_test, anchors_test);
     auto time_9 = std::chrono::high_resolution_clock::now();
+    std::cout << "con_prox_pt_opt completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_9-time_8).count() << " ms" << std::endl;
     std::cout << "algorithm completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_9-time_0).count() << " ms" << std::endl;
 
     compare(S, data_path + "/S.txt", "S");

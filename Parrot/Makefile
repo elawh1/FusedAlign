@@ -14,10 +14,11 @@ LIBS = -lopenblas
 #   export MKLROOT=/path/to/mkl
 #   make
 ifdef MKLROOT
-CXXFLAGS += -DMKL_AVAILABLE
+CXXFLAGS += -fopenmp -DMKL_AVAILABLE
 LIBS = -L$(MKLROOT)/lib/intel64 \
-       -lmkl_intel_lp64 -lmkl_core -lmkl_sequential
+       -lmkl_intel_lp64 -lmkl_core -lmkl_intel_lp64 -lmkl_core -lmkl_intel_thread -liomp5 -lpthread -lm -ldl
 endif
+
 
 all: $(TARGET)
 
