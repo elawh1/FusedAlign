@@ -358,26 +358,35 @@ std::vector<double>  get_batch_rwr_scores(sparse_matrix_t graph, std::vector<MKL
     if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_optimize failed in get_batch_rwr_scores");  
     int l = anchors.size();
     auto time_2 = std::chrono::high_resolution_clock::now();
-    //these are column major
-    std::vector<double> X_vals(n*l, 1.0);      // X(t), all ones
-    std::vector<double> Xnext_vals(n*l, 0.0);
+    
     //one hot encoding E matrix
     std::vector<double> E(n * l, 0.0);
     for (int j = 0; j < l; ++j) {
         E[ anchors[j] + j * n ] = 1.0;   // one-hot at (row=anchor[j], col=j)
     }
+    //these are column major
+    // std::vector<double> X_vals(n*l, 1.0);      // X(t), all ones
+    std::vector<double> X_vals = E;
+    std::vector<double> Xnext_vals(n*l, 0.0);
+    std::vector<double> graph_norm_csr_dense = sparse_to_dense_colmajor(graph_norm_csr, n, n);
     auto time_3 = std::chrono::high_resolution_clock::now();
-    for(int i=0; i < max_iters; i++) {
-        status = mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, (double) (1-restart_prob), graph_norm_csr, descr, SPARSE_LAYOUT_COLUMN_MAJOR, X_vals.data(), l, n, 0.0, Xnext_vals.data(), n);
-        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
-        cblas_daxpy(n * l, restart_prob, E.data(), 1, Xnext_vals.data(), 1);
-        std::swap(X_vals, Xnext_vals);
+    // for(int i=0; i < max_iters; i++) {
+    for(int i=0; i < max_iters-1; i++) {
+        // status = mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, (double) (1-restart_prob), graph_norm_csr, descr, SPARSE_LAYOUT_COLUMN_MAJOR, X_vals.data(), l, n, 0.0, Xnext_vals.data(), n);
+        // if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
+        // cblas_daxpy(n * l, restart_prob, E.data(), 1, Xnext_vals.data(), 1);
+        // std::swap(X_vals, Xnext_vals);
+        Xnext_vals = E;
+        // status = mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, (double) (1-restart_prob), graph_norm_csr, descr, SPARSE_LAYOUT_COLUMN_MAJOR, X_vals.data(), l, n, restart_prob, Xnext_vals.data(), n);
+        // if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
+        cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, n, l, n,(double) (1-restart_prob), graph_norm_csr_dense.data(), n, X_vals.data(), n, restart_prob, Xnext_vals.data(), n);
+        X_vals = Xnext_vals;
     }
     auto time_4= std::chrono::high_resolution_clock::now();
     std::cout << "connect isolated : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()
     << " normalize : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()
-    << " rwr before iteration=50: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()
-    << " rwr iteration=50: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()
+    << " rwr before iterations: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()
+    << " rwr iteration=100: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()
      << " ms" << std::endl;
 
     //column major dense matrix nxl
@@ -517,6 +526,9 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     sparse_matrix_t graph1_normalized = row_normalize_graph( graph1_py, n1);
     sparse_matrix_t graph2_normalized = row_normalize_graph( graph2_py, n2);
+    std::vector<double> graph1_norm_dense = sparse_to_dense_colmajor(graph1_normalized, n1, n1);
+    std::vector<double> graph2_norm_dense = sparse_to_dense_colmajor(graph2_normalized, n2, n2);
+
     std::vector<double> out_cross_dist(n1 * n2, 0.0);
     std::vector<double> out_cross_dist_old(n1 * n2, 0.0);
     std::vector<double> temp(n1 * n2);
@@ -528,18 +540,30 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
         out_cross_dist_old = out_cross_dist;
         //second term computation
         //out_cross_dist is column major too
+
+        //‌ *** Version one with spmm **** //
         //temp is n1xn2 temp = G1.cross_dist
-        auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
-        double coeff = (1 - rwr_restart_prob) * gamma;
-        //we need temp2 = temp^T
-        mkl_domatcopy('C', 'T', n1, n2, 1.0, temp.data(), n1, temp2.data(), n2);
-        //temp3 is n2xn1  temp3 = G2.(temp^T) = G2.(temp2)
-        st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, temp2.data(), n1, n2, 0.0, temp3.data(), n2);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
-        //adding with scaling first element and transposing second element
-        //out_cross_dist:  n1 x n2
-        mkl_domatadd('C', 'N', 'T', n1, n2, (1+rwr_restart_prob), in_cross_dist.data(), n1, 1.0, temp3.data(), n2, out_cross_dist.data(), n1);
+        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+        // double coeff = (1 - rwr_restart_prob) * gamma;
+        // //we need temp2 = temp^T
+        // mkl_domatcopy('C', 'T', n1, n2, 1.0, temp.data(), n1, temp2.data(), n2);
+        // //temp3 is n2xn1  temp3 = G2.(temp^T) = G2.(temp2)
+        // st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, temp2.data(), n1, n2, 0.0, temp3.data(), n2);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+        // //adding with scaling first element and transposing second element
+        // //out_cross_dist:  n1 x n2
+        // mkl_domatadd('C', 'N', 'T', n1, n2, (1+rwr_restart_prob), in_cross_dist.data(), n1, 1.0, temp3.data(), n2, out_cross_dist.data(), n1);
+
+        //‌ *** Version two with dgemm **** //
+        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n1, 1.0, graph1_norm_dense.data(), n1, out_cross_dist.data(), n1, 0.0, temp.data(), n1);
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, n1, n2, n2, 1.0, temp.data(), n1, graph2_norm_dense.data(), n2, 0.0, temp3.data(), n1);
+        mkl_domatadd('C', 'N', 'N', n1, n2, (1+rwr_restart_prob), in_cross_dist.data(), n1, ((1 - rwr_restart_prob) * gamma), temp3.data(), n1, out_cross_dist.data(), n1);
+        //‌ *** end of Version two with dgemm **** //
+
+
         //compute max of absolute values of (out_cross_dist - out_cross_dist_old)
         vdSub(n1 * n2, out_cross_dist_old.data(), out_cross_dist.data(), diff.data());   
         vdAbs(n1*n2, diff.data(), diff_abs.data());
@@ -651,12 +675,12 @@ std::vector<double> minaa(const std::vector<double>& H, int n1, int n2, double e
     // add column minima back: res += col_min
     cblas_daxpy(n2, 1.0, col_min.data(), 1, res.data(), 1);
     auto time_5= std::chrono::high_resolution_clock::now();    
-    std::cout << "in minaa init : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
-    " col_min compute : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
-    " compute H_shifted(Cs mat) : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << 
-    " mina : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << 
-    " add row_min after minb : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_5-time_4).count() << 
-    " ms" << std::endl;
+    // std::cout << "in minaa init : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+    // " col_min compute : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+    // " compute H_shifted(Cs mat) : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << 
+    // " mina : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << 
+    // " add row_min after minb : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_5-time_4).count() << 
+    // " ms" << std::endl;
     return res;  // shape: (1 x n2)
 }
 
@@ -793,6 +817,9 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
 
     sparse_matrix_t row_norm_adj1 = row_normalize_graph(graph1_py, n1);
     sparse_matrix_t row_norm_adj2 = row_normalize_graph(graph2_py, n2);
+    //Sparse adj to dense
+    std::vector<double> dense_adj1 = sparse_to_dense_colmajor(row_norm_adj1, n1, n1);
+    std::vector<double> dense_adj2 = sparse_to_dense_colmajor(row_norm_adj2, n2, n2);
 
     auto time_2 = std::chrono::high_resolution_clock::now();
     std::cout << "row normalizing graphs in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << " ms" << std::endl;
@@ -804,7 +831,7 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
     auto time_3 = std::chrono::high_resolution_clock::now();
     std::cout << "L_fixed computation in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << " ms" << std::endl;
     // compare(L_fixed, data_path + "/L_fixed.txt.txt", "L_fixed");
-    
+
     auto L_compute_time=0, C_compute_time=0, Cost_compute_time=0, before_minaa=0, compute_minaa=0, between_minaa_minbb=0, compute_minbb=0, update_S=0, inner_loop=0;
 
     // outer_iters = 2;
@@ -835,36 +862,48 @@ std::vector<double> con_prox_pt_opt( const std::string data_path, sparse_matrix_
         // Compute RW_term = row_norm_adj1.T @ S @ row_norm_adj2 (n1 x n2)
         // A1T_S = row_norm_adj1.T @ S
         // op(A) = TRANSPOSE, A: n1 x n1, S: n1 x n2 -> A1T_S: n1 x n2
-        matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
-        auto spmm_0 = std::chrono::high_resolution_clock::now();
-        sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, S.data(), n2, n1, 0.0, A1T_S.data(), n1);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A1^T S) failed");
-        auto spmm_0_1 = std::chrono::high_resolution_clock::now();
-        // cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, n1, n2, n1, 1.0, adj1_dense.data(), n1, S.data(), n1, 0.0, A1T_S.data(), n1);
+        // matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
+        // auto spmm_0 = std::chrono::high_resolution_clock::now();
+        // sparse_status_t st = mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, S.data(), n2, n1, 0.0, A1T_S.data(), n1);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A1^T S) failed");
+        // auto spmm_0_1 = std::chrono::high_resolution_clock::now();
+        // mkl_sparse_optimize(row_norm_adj2);
+        // auto spmm_0_2 = std::chrono::high_resolution_clock::now();
+        // mkl_domatcopy('C', 'T', n1, n2, 1.0, A1T_S.data(), n1, buffer.data(), n2); //transpose
+        // auto spmm_0_3 = std::chrono::high_resolution_clock::now();
+        // std::vector<double> temp(n1*n2);
+        // auto spmm_0_4 = std::chrono::high_resolution_clock::now();
+        // mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE,  1.0, row_norm_adj2, descr, SPARSE_LAYOUT_COLUMN_MAJOR, buffer.data(), n1, n2, 0.0, temp.data(), n2);      //spmm
+        // auto spmm_0_5 = std::chrono::high_resolution_clock::now();
+        // mkl_domatcopy( 'C', 'T', n2, n1, 1.0, temp.data(), n2, RW_term.data(), n1);
+        // auto spmm_1 = std::chrono::high_resolution_clock::now();
+        // std::cout << "2spmm G1*S*G2 : " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_1-spmm_0).count() << " ms" << std::endl;
+        // std::cout << "2spmm G1*S*G2 ---- 1st spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_1-spmm_0).count() <<
+        // " sparse optimize " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_2-spmm_0_1).count() << 
+        // " mat copytrans " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_3-spmm_0_2).count() << 
+        // " temp init " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_4-spmm_0_3).count() << 
+        // " 2nd spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_5-spmm_0_4).count() << 
+        // " mat copytrans " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_1-spmm_0_5).count() << " ms" << std::endl;
 
-        // A1T_S_T = (A1T_S)^T (n2 x n1)
-        // mkl_domatcopy('C', 'T', n1, n2, 1.0, A1T_S.data(), n1, A1T_S_T.data(), n2);    //col major
 
-        // st = mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_ROW_MAJOR, A1T_S_T.data(), n1, n1, 0.0, A2_A1T_S_T.data(), n1);  //row major
-        // st = mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_COLUMN_MAJOR, A1T_S_T.data(), n1, n2, 0.0, A2_A1T_S_T.data(), n2);     // col major
-        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mm (A2 A1^T S^T) failed");
-        mkl_sparse_optimize(row_norm_adj2);
-        auto spmm_0_2 = std::chrono::high_resolution_clock::now();
-        mkl_domatcopy('C', 'T', n1, n2, 1.0, A1T_S.data(), n1, buffer.data(), n2); //transpose
-        auto spmm_0_3 = std::chrono::high_resolution_clock::now();
-        std::vector<double> temp(n1*n2);
-        auto spmm_0_4 = std::chrono::high_resolution_clock::now();
-        mkl_sparse_d_mm( SPARSE_OPERATION_TRANSPOSE,  1.0, row_norm_adj2, descr, SPARSE_LAYOUT_COLUMN_MAJOR, buffer.data(), n1, n2, 0.0, temp.data(), n2);      //spmm
-        auto spmm_0_5 = std::chrono::high_resolution_clock::now();
-        mkl_domatcopy( 'C', 'T', n2, n1, 1.0, temp.data(), n2, RW_term.data(), n1);
-        auto spmm_1 = std::chrono::high_resolution_clock::now();
-        std::cout << "2spmm G1*S*G2 : " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_1-spmm_0).count() << " ms" << std::endl;
-        std::cout << "2spmm G1*S*G2 ---- 1st spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_1-spmm_0).count() <<
-        "sparse optimize " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_2-spmm_0_1).count() << 
-        "mat copytrans " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_3-spmm_0_2).count() << 
-        "temp init " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_4-spmm_0_3).count() << 
-        "2nd spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_0_5-spmm_0_4).count() << 
-        "mat copytrans " << std::chrono::duration_cast<std::chrono::milliseconds>(spmm_1-spmm_0_5).count() << " ms" << std::endl;
+
+        //// ***** experiment spmm to dgemm ***** /////
+        auto timing_1 = std::chrono::high_resolution_clock::now();
+        cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, n1, n2, n1, 1.0, dense_adj1.data(), n1, S.data(), n1, 0.0, buffer.data(), n1);         //col major
+        auto timing_2 = std::chrono::high_resolution_clock::now();
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n2, 1.0, buffer.data(), n1, dense_adj2.data(), n2, 0.0, RW_term.data(), n1);         //col major
+        auto timing_3 = std::chrono::high_resolution_clock::now();
+        std::cout << "2dgemm for second 2matmul G1*S*G2 total ---- " <<  std::chrono::duration_cast<std::chrono::milliseconds>(timing_3-timing_1).count() <<
+        " 1st dgemm " << std::chrono::duration_cast<std::chrono::milliseconds>(timing_2-timing_1).count() <<
+        " 2nd dgemm " << std::chrono::duration_cast<std::chrono::milliseconds>(timing_3-timing_2).count() << " ms" << std::endl;
+        // int err_cnt = 0, err_cnt2=0;
+        // for(int i=0; i<n1*n2; i++) {
+        //     double diff = std::abs(temp[i] - RW_term[i]);
+        //     if (diff > 1e-5) err_cnt++;
+        //     if (diff > 1e-3)  err_cnt2++;
+        // }
+        // printf("num of error %d, err cnt2 %d\n", err_cnt, err_cnt2);
+
 
         // cblas_dgemm( CblasColMajor, CblasNoTrans, CblasNoTrans, n1, n2, n2, 1.0, A1T_S.data(), n1, adj2_dense.data(), n2, 0.0, RW_term.data(), n1);
 
@@ -1165,4 +1204,4 @@ double mrr_mean_score_cpp( const std::vector<double>& S, int n1, int n2, const s
     double mrr_ltr = mrr_ltr_score_cpp(S, n1, n2, anchor_pairs_test);
     double mrr_rtl = mrr_rtl_score_cpp(S, n1, n2, anchor_pairs_test);
     return 0.5 * (mrr_ltr + mrr_rtl);
-}
+} 
