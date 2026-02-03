@@ -1204,4 +1204,4 @@ double mrr_mean_score_cpp( const std::vector<double>& S, int n1, int n2, const s
     double mrr_ltr = mrr_ltr_score_cpp(S, n1, n2, anchor_pairs_test);
     double mrr_rtl = mrr_rtl_score_cpp(S, n1, n2, anchor_pairs_test);
     return 0.5 * (mrr_ltr + mrr_rtl);
-} 
+}
