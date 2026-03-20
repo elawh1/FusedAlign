@@ -3,3 +3,4 @@ g2_num_nodes=1003
 use_attr=0
 outer_iter=10
 inner_iter=5
+directed=1

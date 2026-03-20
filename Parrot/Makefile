@@ -3,7 +3,7 @@ CXXFLAGS = -O3 -std=c++17 -Wall
 
 TARGET = parrot
 SRC = parrot.cpp
-HDR = helper.h
+HDR = helper.h helper2.h fused_spmm.h accuracy.h
 
 # ---- BLAS / MKL ----
 # Default: OpenBLAS
@@ -22,7 +22,7 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) $(HDR)
+$(TARGET): $(SRC) $(HDR) 
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LIBS)
 
 clean:
