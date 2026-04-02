@@ -569,6 +569,7 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
 
     // print_sparse_matrix_info(graph1_normalized, "graph1_normalized");
     // print_sparse_matrix_info(graph2_normalized, "graph2_normalized");
+    auto time_only_spmm = time_2 - time_2;
 
     for (int i = 0; i < max_iters; ++i) {
         auto time_2_0 = std::chrono::high_resolution_clock::now();
@@ -614,11 +615,13 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
         // out_cross_dist = CC;
         // fused spmm 
         // out_cross_dist = blockwise_colsum_matmul( graph1_normalized, graph2_normalized, out_cross_dist, n1, n2, 10);
-        auto time_2_0_3 = std::chrono::high_resolution_clock::now();
+        // auto time_2_0_3 = std::chrono::high_resolution_clock::now();
         // std::cout << "*** new method " << i <<
         // " --  new spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_0_2-time_2_0_1).count() << 
         // " -- copy " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_0_3-time_2_0_2).count() << std::endl;
         auto time_2_1 = std::chrono::high_resolution_clock::now();
+        time_only_spmm += time_2_1 - time_2_0;
+
         //compute max of absolute values of (out_cross_dist - out_cross_dist_old)
         if (out_cross_dist_converge(out_cross_dist, out_cross_dist_old, tol)) break;
         auto time_2_2 = std::chrono::high_resolution_clock::now();
@@ -648,7 +651,8 @@ std::vector<double> get_product_rwr_mat( sparse_matrix_t graph1_py, sparse_matri
     std::cout << "in get_product_rwr_mat row normalize " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
     " init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
     " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << 
-    " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()   
+    " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()   <<
+    " time only spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(time_only_spmm).count()
     << std::endl;
     
     return out_cross_dist;

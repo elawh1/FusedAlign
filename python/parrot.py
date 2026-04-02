@@ -12,7 +12,7 @@ import threading
 from PlanetAlign.data import Dataset
 from PlanetAlign.utils import get_anchor_pairs, get_batch_rwr_scores, get_normalized_neg_exp_dist
 from PlanetAlign.metrics import hits_ks_scores, mrr_score
-from .base_model import BaseModel
+from PlanetAlign.algorithms.base_model import BaseModel
 
 
 def write_to_file(var, var_name, out_dir=None):
