@@ -4,7 +4,6 @@ CXXFLAGS = -O3 -std=c++17 -Wall
 TARGET = parrot
 SRC = parrot.cpp
 HDR = helper.h helper2.h fused_spmm.h accuracy.h
-
 # ---- BLAS / MKL ----
 # Default: OpenBLAS
 LIBS = -lopenblas
@@ -14,9 +13,9 @@ LIBS = -lopenblas
 #   export MKLROOT=/path/to/mkl
 #   make
 ifdef MKLROOT
-CXXFLAGS += -fopenmp -DMKL_AVAILABLE
+CXXFLAGS += -march=native -fopenmp -DMKL_AVAILABLE -DMKL_ILP64
 LIBS = -L$(MKLROOT)/lib/intel64 \
-       -lmkl_intel_lp64 -lmkl_core -lmkl_intel_lp64 -lmkl_core -lmkl_intel_thread -liomp5 -lpthread -lm -ldl
+       -lmkl_intel_ilp64 -lmkl_core -lmkl_intel_thread -liomp5 -lpthread -lm -ldl
 endif
 
 
@@ -27,3 +26,4 @@ $(TARGET): $(SRC) $(HDR)
 
 clean:
 	rm -f $(TARGET)
+
