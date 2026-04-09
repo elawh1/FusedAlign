@@ -23,7 +23,9 @@ std::unordered_map<int, double> hits_ks_ltr_scores( const std::vector<double>& S
         std::iota(idx.begin(), idx.end(), 0);
         std::sort(idx.begin(), idx.end(),
             [&](int a, int b) {
-                return S[i + a * n1] > S[i + b * n1];
+                size_t idx1 = (size_t) i + (size_t) a * (size_t) n1;
+                size_t idx2 = (size_t) i + (size_t) b * (size_t) n1;
+                return S[idx1] > S[idx2];
             });
 
         for (int r = 0; r < n2; ++r) {
@@ -64,7 +66,9 @@ std::unordered_map<int, double> hits_ks_rtl_scores( const std::vector<double>& S
         std::iota(idx.begin(), idx.end(), 0);
         std::sort(idx.begin(), idx.end(),
             [&](int a, int b) {
-                return S[a + j * n1] > S[b + j * n1];
+                size_t idx1 = (size_t) a + (size_t) j * (size_t) n1;
+                size_t idx2 = (size_t) b + (size_t) j * (size_t) n1;
+                return S[idx1] > S[idx2];
             });
         for (int r = 0; r < n1; ++r) {
             if (idx[r] == i_true) {
@@ -106,7 +110,9 @@ double mrr_ltr_score_cpp( const std::vector<double>& S, int n1, int n2, const st
         // sort similarity row i descending
         std::sort(idx.begin(), idx.end(),
             [&](int a, int b) {
-                return S[i + a * n1] > S[i + b * n1];
+                size_t idx1 = (size_t) i + (size_t) a * (size_t) n1;
+                size_t idx2 = (size_t) i + (size_t) b * (size_t) n1;
+                return S[idx1] > S[idx2];
             });
         // find rank
         for (int r = 0; r < n2; ++r) {
@@ -134,7 +140,9 @@ double mrr_rtl_score_cpp( const std::vector<double>& S, int n1, int n2, const st
         // sort similarity column j descending
         std::sort(idx.begin(), idx.end(),
             [&](int a, int b) {
-                return S[a + j * n1] > S[b + j * n1];
+                size_t idx1 = (size_t) a + (size_t) j * (size_t) n1;
+                size_t idx2 = (size_t) b + (size_t) j * (size_t) n1;
+                return S[idx1] > S[idx2];
             });
         // find rank
         for (int r = 0; r < n1; ++r) {

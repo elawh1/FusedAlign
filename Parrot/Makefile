@@ -21,10 +21,10 @@ LIBS = -lopenblas
 #   export MKLROOT=/path/to/mkl
 #   make
 ifdef MKLROOT
-CXXFLAGS += -fopenmp -DMKL_AVAILABLE
+CXXFLAGS += -march=native -fopenmp -DMKL_AVAILABLE -DMKL_ILP64
 NVCCFLAGS += -Xcompiler -fopenmp -DMKL_AVAILABLE
 LIBS = -L$(MKLROOT)/lib/intel64 \
-       -lmkl_intel_lp64 -lmkl_core -lmkl_intel_lp64 -lmkl_core -lmkl_intel_thread -liomp5 -lpthread -lm -ldl
+       -lmkl_intel_lp64 -lmkl_core -lmkl_intel_thread -liomp5 -lpthread -lm -ldl
 NVLIBS = -I/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/include \
 		-L/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/math_libs/12.9/targets/x86_64-linux/lib \
 		-lcusparse -lcublas

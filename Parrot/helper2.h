@@ -1,6 +1,19 @@
 #include <mkl.h>
 #include <cmath>
 #include <iostream>
+#include <vector>
+#include <algorithm>
+#include <random>
+#include <unordered_set>
+#include <stdexcept>
+#include <omp.h>
+#include <cstdio>
+#include <mkl_spblas.h>
+// #include <metis.h>
+#include <cstdint>
+#include <limits>
+#include <numeric>
+#include <utility>
 
 auto has_nan = [](const std::vector<double>& v){
     for (double x : v) if (std::isnan(x)) return true;
@@ -11,6 +24,73 @@ bool has_nan_or_inf(const std::vector<double>& v) {
     for (double x : v)
         if (std::isnan(x) || std::isinf(x)) return true;
     return false;
+}
+
+bool sparse_has_nan_or_inf(sparse_matrix_t A) {
+    sparse_index_base_t indexing; 
+    MKL_INT rows, cols; 
+    MKL_INT *rows_start = nullptr, *rows_end = nullptr, *col_indx = nullptr;
+    double *values = nullptr;
+
+    sparse_status_t status = mkl_sparse_d_export_csr(A, &indexing, &rows, &cols, &rows_start, &rows_end, &col_indx, &values);
+    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_export_csr failed");
+    if (values == nullptr) return false;
+    for (MKL_INT i = 0; i < rows; ++i) {
+        for (MKL_INT idx = rows_start[i]; idx < rows_end[i]; ++idx) {
+            double x = values[idx];
+            if (std::isnan(x) || std::isinf(x)) return true;
+        }
+    }
+    return false;
+}
+
+double sparse_max_abs(sparse_matrix_t A) {
+    sparse_index_base_t indexing;
+    MKL_INT rows, cols;
+    MKL_INT *rows_start = nullptr, *rows_end = nullptr, *col_indx = nullptr;
+    double *values = nullptr;
+
+    sparse_status_t status = mkl_sparse_d_export_csr(
+        A, &indexing, &rows, &cols, &rows_start, &rows_end, &col_indx, &values
+    );
+    if (status != SPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("mkl_sparse_d_export_csr failed");
+    }
+
+    double mx = 0.0;
+    for (MKL_INT i = 0; i < rows; ++i) {
+        for (MKL_INT k = rows_start[i]; k < rows_end[i]; ++k) {
+            double x = values[k];
+            if (std::isnan(x) || std::isinf(x)) continue;
+            mx = std::max(mx, std::abs(x));
+        }
+    }
+    return mx;
+}
+
+void sparse_print_large_values(sparse_matrix_t A, double threshold) {
+    sparse_index_base_t indexing;
+    MKL_INT rows, cols;
+    MKL_INT *rows_start = nullptr, *rows_end = nullptr, *col_indx = nullptr;
+    double *values = nullptr;
+
+    sparse_status_t status = mkl_sparse_d_export_csr(
+        A, &indexing, &rows, &cols, &rows_start, &rows_end, &col_indx, &values
+    );
+    if (status != SPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("mkl_sparse_d_export_csr failed");
+    }
+
+    for (MKL_INT i = 0; i < rows; ++i) {
+        for (MKL_INT k = rows_start[i]; k < rows_end[i]; ++k) {
+            double x = values[k];
+            if (!std::isnan(x) && !std::isinf(x) && std::abs(x) > threshold) {
+                std::cout << "sparse large value at row " << i
+                          << " col " << col_indx[k]
+                          << " : " << x << "\n";
+            }
+        }
+    }
 }
 
 double getMax(const std::vector<double>& v) {
@@ -27,6 +107,26 @@ double getMin(const std::vector<double>& v) {
         if ( v[i] < min ) min = v[i];
     }
     return min;
+}
+
+void load_config(const std::string& data_path, MKL_INT& g1_num_nodes, MKL_INT& g2_num_nodes, bool& use_attr, bool& directed, int& inner_iters, int& outer_iters) {
+    std::ifstream fin(data_path + "/config.txt");
+    if(!fin) {
+        throw std::runtime_error("cannot open config.txt");
+    }
+    std::string line;
+    while ( std::getline(fin, line) ) {
+        std::istringstream iss(line);
+        std::string key, eq;
+        if (std::getline(iss, key, '=') && std::getline(iss, eq)) {
+            if (key == "g1_num_nodes") g1_num_nodes = std::stoi(eq);
+            else if (key == "g2_num_nodes") g2_num_nodes = std::stoi(eq);
+            else if (key == "use_attr") use_attr = (eq == "1");
+            else if (key == "directed") directed = (eq == "1");
+            else if (key == "outer_iter") outer_iters = std::stoi(eq);
+            else if (key == "inner_iter") inner_iters = std::stoi(eq);
+        }
+    }
 }
 
 std::vector<double> readFileToVector(const std::string &filename, bool directed) {
@@ -148,6 +248,44 @@ sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int 
 
     return A_csr;
 }
+
+// sparse_matrix_t make_mat_from_edgelist_symmetric(const std::vector<double>& edgelist, int m, int n) {
+//     MKL_INT nnz = 0;
+//     std::vector<MKL_INT> rows, cols;
+//     std::vector<double> vals;
+//     rows.reserve(edgelist.size()*2);
+//     cols.reserve(edgelist.size()*2);
+//     vals.reserve(edgelist.size()*2);
+// 	// std::vector<MKL_INT> rows(edgelist.size()), cols(edgelist.size());
+// 	// std::vector<double> vals(edgelist.size());
+// 	for(int i=0; i < edgelist / 2; i++) {
+//         vals.push_back(1.0);
+//         rows.push_back((MKL_INT) edgelist[2*i]);
+//         cols.push_back((MKL_INT) edgelist[2*i+1]);
+//         nnz++;
+//         if (edgelist[2*i] != edgelist[2*i+1]) {
+//             vals.push_back(1.0);
+//             rows.push_back((MKL_INT) edgelist[2*i+1]);
+//             cols.push_back((MKL_INT) edgelist[2*i]);
+//             nnz++;
+//         }
+//     }
+//     rows.resize(nnz);
+//     cols.resize(nnz);
+//     vals.resize(nnz);
+
+// 	sparse_matrix_t A = nullptr;
+//     auto st = mkl_sparse_d_create_coo(&A, SPARSE_INDEX_BASE_ZERO, m, n, nnz, rows.data(), cols.data(), vals.data());
+//     if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("create_coo failed");
+//     mkl_sparse_optimize(A);
+
+//     sparse_matrix_t A_csr;
+//     mkl_sparse_convert_csr(A, SPARSE_OPERATION_NON_TRANSPOSE, &A_csr);
+    
+//     mkl_sparse_destroy(A);
+
+//     return A_csr;
+// }
 
 void print_sparse_matrix_info(sparse_matrix_t A, const char* name = "matrix") {
     sparse_index_base_t indexing;
@@ -419,13 +557,6 @@ void graph_connect_isolated(sparse_matrix_t graph, std::vector<double>& graph_ro
         
 }
 
-#include <mkl.h>
-#include <vector>
-#include <algorithm>
-#include <random>
-#include <unordered_set>
-#include <stdexcept>
-#include <omp.h>
 
 namespace {
 
@@ -655,3 +786,441 @@ sparse_matrix_t graph_row_normalize_connect_isolated(sparse_matrix_t graph, unsi
     check_sparse(mkl_sparse_order(graph_row_normalized), "mkl_sparse_order failed on graph_row_normalized");
     return graph_row_normalized;
 }
+
+// Drop-in blocked replacement for mkl_sparse_d_mm
+// Assumes dense matrices are column-major.
+// Internally splits columns into blocks and calls mkl_sparse_d_mm on each block.
+//
+// Parameters match mkl_sparse_d_mm:
+//
+// operation        : sparse op flag
+// alpha            : scalar
+// A                : sparse matrix (CSR handle typically)
+// descr            : matrix descriptor
+// layout           : must be SPARSE_LAYOUT_COLUMN_MAJOR here
+// B                : input dense matrix
+// columns          : number of columns of B and C
+// ldb              : leading dimension of B
+// beta             : scalar
+// C                : output dense matrix
+// ldc              : leading dimension of C
+//
+// Optional block_size has a default. You can tune 32/64/128/256/512.
+//
+inline sparse_status_t blocked_mkl_sparse_d_mm( sparse_operation_t operation, double alpha, sparse_matrix_t A, matrix_descr descr, sparse_layout_t layout, const double* B, 
+    MKL_INT columns, MKL_INT ldb, double beta, double* C, MKL_INT ldc, MKL_INT block_size = 128 ) {
+    if (layout != SPARSE_LAYOUT_COLUMN_MAJOR)   return SPARSE_STATUS_NOT_SUPPORTED;
+    if (columns <= 0 || ldb <= 0 || ldc <= 0 || block_size <= 0)  return SPARSE_STATUS_INVALID_VALUE;
+    sparse_status_t st = SPARSE_STATUS_SUCCESS;
+
+    // For C(:, j0:j1), beta should be the user beta.
+    // If a given output block were accumulated multiple times, later calls would use beta=1.
+    // But here each block is written exactly once, so user beta is correct for every block.
+    for (MKL_INT col_start = 0; col_start < columns; col_start += block_size) {
+        const MKL_INT jb = std::min(block_size, columns - col_start);
+        // Column-major offset: pointer to first element of column col_start
+        const double* B_block = B + static_cast<size_t>(col_start) * ldb;
+        double*       C_block = C + static_cast<size_t>(col_start) * ldc;
+        st = mkl_sparse_d_mm( operation, alpha, A, descr, layout, B_block, jb, ldb, beta, C_block, ldc);
+        if (st != SPARSE_STATUS_SUCCESS) return st;
+    }
+    return SPARSE_STATUS_SUCCESS;
+}
+
+inline void prepare_sparse_mm_once( sparse_matrix_t A, matrix_descr descr, MKL_INT typical_block_cols, MKL_INT expected_calls  ) {
+    auto st = mkl_sparse_set_mm_hint( A, SPARSE_OPERATION_NON_TRANSPOSE, descr, SPARSE_LAYOUT_COLUMN_MAJOR, typical_block_cols, expected_calls);
+    if (st != SPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("mkl_sparse_set_mm_hint failed");
+    }
+    st = mkl_sparse_optimize(A);
+    if (st != SPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("mkl_sparse_optimize failed");
+    }
+}
+
+void daxpy_chunked(size_t N, double alpha, const double* x, double* y) {
+    const size_t CHUNK = (size_t)std::numeric_limits<MKL_INT>::max();
+    size_t off = 0;
+    while (off < N) {
+        size_t len = std::min(CHUNK, N - off);
+        cblas_daxpy((MKL_INT)len, alpha, x + off, 1, y + off, 1);
+        off += len;
+    }
+}
+
+void dscal_chunked(size_t N, double alpha, double* x) {
+    const size_t CHUNK = (size_t)std::numeric_limits<MKL_INT>::max();
+    size_t off = 0;
+    while (off < N) {
+        size_t len = std::min(CHUNK, N - off);
+        cblas_dscal((MKL_INT)len, alpha, x + off, 1);
+        off += len;
+    }
+}
+
+
+// struct PermutedMKLCSR {
+//     sparse_matrix_t A = nullptr;
+
+//     // Keep backing arrays alive for the lifetime of the handle.
+//     // This is the safest choice.
+//     std::vector<MKL_INT> rows_start;
+//     std::vector<MKL_INT> rows_end;
+//     std::vector<MKL_INT> col_indx;
+//     std::vector<double> values;
+
+//     // Useful metadata
+//     std::vector<idx_t> part;          // METIS part for each old vertex
+//     std::vector<MKL_INT> perm;        // new_index -> old_index
+//     std::vector<MKL_INT> iperm;       // old_index -> new_index
+//     std::vector<MKL_INT> block_ptr;   // block boundaries in permuted ordering
+
+//     MKL_INT nrows = 0;
+//     MKL_INT ncols = 0;
+
+//     ~PermutedMKLCSR() {
+//         if (A) {
+//             mkl_sparse_destroy(A);
+//             A = nullptr;
+//         }
+//     }
+
+//     PermutedMKLCSR() = default;
+//     PermutedMKLCSR(const PermutedMKLCSR&) = delete;
+//     PermutedMKLCSR& operator=(const PermutedMKLCSR&) = delete;
+
+//     PermutedMKLCSR(PermutedMKLCSR&& other) noexcept {
+//         *this = std::move(other);
+//     }
+
+//     PermutedMKLCSR& operator=(PermutedMKLCSR&& other) noexcept {
+//         if (this != &other) {
+//             if (A) mkl_sparse_destroy(A);
+
+//             A = other.A;
+//             other.A = nullptr;
+
+//             rows_start = std::move(other.rows_start);
+//             rows_end   = std::move(other.rows_end);
+//             col_indx   = std::move(other.col_indx);
+//             values     = std::move(other.values);
+
+//             part       = std::move(other.part);
+//             perm       = std::move(other.perm);
+//             iperm      = std::move(other.iperm);
+//             block_ptr  = std::move(other.block_ptr);
+
+//             nrows = other.nrows;
+//             ncols = other.ncols;
+//         }
+//         return *this;
+//     }
+// };
+
+// static inline void check_sparse_status(sparse_status_t st, const char* msg) {
+//     if (st != SPARSE_STATUS_SUCCESS) {
+//         throw std::runtime_error(msg);
+//     }
+// }
+
+// static inline void check_metis_ok(int status, const char* msg) {
+//     if (status != METIS_OK) {
+//         throw std::runtime_error(msg);
+//     }
+// }
+
+// static inline idx_t safe_to_idx_t(MKL_INT x, const char* msg) {
+//     if (x < 0) throw std::runtime_error(msg);
+//     if (static_cast<long long>(x) > static_cast<long long>(std::numeric_limits<idx_t>::max())) {
+//         throw std::runtime_error(msg);
+//     }
+//     return static_cast<idx_t>(x);
+// }
+
+// static inline MKL_INT safe_to_mkl_int(idx_t x, const char* msg) {
+//     if (x < 0) throw std::runtime_error(msg);
+//     if (static_cast<long long>(x) > static_cast<long long>(std::numeric_limits<MKL_INT>::max())) {
+//         throw std::runtime_error(msg);
+//     }
+//     return static_cast<MKL_INT>(x);
+// }
+
+// /*
+// Assumptions:
+// - input A_in is CSR and square
+// - symmetric permutation A' = P A P^T is desired
+// - METIS partitioning is based on the STRUCTURAL graph of A:
+//     * diagonal entries are ignored
+//     * graph is symmetrized (undirected)
+// - original numerical values of A are preserved in the final reordered matrix
+// */
+// PermutedMKLCSR reorder_with_metis(const sparse_matrix_t A_in, idx_t nparts) {
+//     if (!A_in) {
+//         throw std::runtime_error("A_in is null");
+//     }
+//     if (nparts <= 0) {
+//         throw std::runtime_error("nparts must be > 0");
+//     }
+
+//     // -------------------------------------------------------------------------
+//     // 1) Export input MKL CSR
+//     // -------------------------------------------------------------------------
+//     sparse_index_base_t indexing;
+//     MKL_INT rows, cols;
+//     MKL_INT* in_rows_start = nullptr;
+//     MKL_INT* in_rows_end   = nullptr;
+//     MKL_INT* in_col_indx   = nullptr;
+//     double*  in_values     = nullptr;
+
+//     check_sparse_status(
+//         mkl_sparse_d_export_csr(
+//             A_in, &indexing, &rows, &cols,
+//             &in_rows_start, &in_rows_end,
+//             &in_col_indx, &in_values),
+//         "mkl_sparse_d_export_csr failed"
+//     );
+
+//     if (rows != cols) {
+//         throw std::runtime_error("reorder_with_metis currently assumes a square matrix");
+//     }
+
+//     const MKL_INT n = rows;
+//     const MKL_INT base = (indexing == SPARSE_INDEX_BASE_ONE) ? 1 : 0;
+//     const MKL_INT nnz  = in_rows_end[n - 1] - base;
+
+//     if (nnz < 0) {
+//         throw std::runtime_error("invalid CSR: negative nnz");
+//     }
+
+//     // -------------------------------------------------------------------------
+//     // 2) Build undirected structural graph for METIS from A's sparsity pattern
+//     //    Ignore diagonal; symmetrize pattern
+//     // -------------------------------------------------------------------------
+//     std::vector<std::unordered_set<MKL_INT>> nbrs(static_cast<size_t>(n));
+
+//     for (MKL_INT i = 0; i < n; ++i) {
+//         MKL_INT row_begin = in_rows_start[i] - base;
+//         MKL_INT row_end   = in_rows_end[i]   - base;
+
+//         for (MKL_INT p = row_begin; p < row_end; ++p) {
+//             MKL_INT j = in_col_indx[p] - base;
+
+//             if (j < 0 || j >= n) {
+//                 throw std::runtime_error("column index out of range");
+//             }
+//             if (j == i) continue; // drop diagonal for graph partitioning
+
+//             nbrs[static_cast<size_t>(i)].insert(j);
+//             nbrs[static_cast<size_t>(j)].insert(i); // symmetrize
+//         }
+//     }
+
+//     // Convert to METIS CSR
+//     std::vector<idx_t> xadj(static_cast<size_t>(n) + 1, 0);
+//     size_t total_adj = 0;
+//     for (MKL_INT i = 0; i < n; ++i) {
+//         xadj[static_cast<size_t>(i)] = static_cast<idx_t>(total_adj);
+//         total_adj += nbrs[static_cast<size_t>(i)].size();
+//     }
+//     xadj[static_cast<size_t>(n)] = static_cast<idx_t>(total_adj);
+
+//     std::vector<idx_t> adjncy;
+//     adjncy.reserve(total_adj);
+
+//     for (MKL_INT i = 0; i < n; ++i) {
+//         // sorting neighbors is not required, but nice for determinism
+//         std::vector<MKL_INT> row_nbrs(
+//             nbrs[static_cast<size_t>(i)].begin(),
+//             nbrs[static_cast<size_t>(i)].end()
+//         );
+//         std::sort(row_nbrs.begin(), row_nbrs.end());
+//         for (MKL_INT j : row_nbrs) {
+//             adjncy.push_back(safe_to_idx_t(j, "MKL_INT -> idx_t overflow in adjncy"));
+//         }
+//     }
+
+//     // -------------------------------------------------------------------------
+//     // 3) METIS partition
+//     // -------------------------------------------------------------------------
+//     idx_t nvtxs = safe_to_idx_t(n, "MKL_INT -> idx_t overflow in nvtxs");
+//     idx_t ncon  = 1;
+//     idx_t objval = 0;
+
+//     if (nparts > nvtxs) {
+//         nparts = nvtxs;
+//     }
+
+//     std::vector<idx_t> part(static_cast<size_t>(nvtxs), 0);
+
+//     int metis_status = METIS_PartGraphKway(
+//         &nvtxs,
+//         &ncon,
+//         xadj.data(),
+//         adjncy.data(),
+//         nullptr,   // vwgt
+//         nullptr,   // vsize
+//         nullptr,   // adjwgt
+//         &nparts,
+//         nullptr,   // tpwgts
+//         nullptr,   // ubvec
+//         nullptr,   // options
+//         &objval,
+//         part.data()
+//     );
+//     check_metis_ok(metis_status, "METIS_PartGraphKway failed");
+
+//     // -------------------------------------------------------------------------
+//     // 4) Build perm / iperm / block_ptr
+//     //    perm[new] = old
+//     //    iperm[old] = new
+//     // -------------------------------------------------------------------------
+//     std::vector<MKL_INT> counts(static_cast<size_t>(nparts), 0);
+//     for (idx_t p : part) {
+//         if (p < 0 || p >= nparts) {
+//             throw std::runtime_error("invalid METIS partition id");
+//         }
+//         counts[static_cast<size_t>(p)]++;
+//     }
+
+//     std::vector<MKL_INT> block_ptr(static_cast<size_t>(nparts) + 1, 0);
+//     for (idx_t p = 0; p < nparts; ++p) {
+//         block_ptr[static_cast<size_t>(p + 1)] =
+//             block_ptr[static_cast<size_t>(p)] + counts[static_cast<size_t>(p)];
+//     }
+
+//     std::vector<MKL_INT> perm(static_cast<size_t>(n), 0);
+//     std::vector<MKL_INT> next = block_ptr;
+
+//     for (MKL_INT old_i = 0; old_i < n; ++old_i) {
+//         idx_t p = part[static_cast<size_t>(old_i)];
+//         perm[static_cast<size_t>(next[static_cast<size_t>(p)]++)] = old_i;
+//     }
+
+//     std::vector<MKL_INT> iperm(static_cast<size_t>(n), 0);
+//     for (MKL_INT new_i = 0; new_i < n; ++new_i) {
+//         iperm[static_cast<size_t>(perm[static_cast<size_t>(new_i)])] = new_i;
+//     }
+
+//     // -------------------------------------------------------------------------
+//     // 5) Build permuted CSR for A' = P A P^T
+//     //
+//     // For each new row new_i:
+//     //   old_i = perm[new_i]
+//     //   each old entry (old_i, old_j) goes to (new_i, iperm[old_j])
+//     // -------------------------------------------------------------------------
+//     std::vector<MKL_INT> out_rows_start(static_cast<size_t>(n), 0);
+//     std::vector<MKL_INT> out_rows_end(static_cast<size_t>(n), 0);
+
+//     // First pass: row lengths
+//     for (MKL_INT new_i = 0; new_i < n; ++new_i) {
+//         MKL_INT old_i = perm[static_cast<size_t>(new_i)];
+//         MKL_INT row_begin = in_rows_start[old_i] - base;
+//         MKL_INT row_end   = in_rows_end[old_i]   - base;
+
+//         out_rows_start[static_cast<size_t>(new_i)] = row_begin; // temporary
+//         out_rows_end[static_cast<size_t>(new_i)]   = row_end;   // temporary
+//     }
+
+//     // Because symmetric permutation preserves nnz count row-by-row under row reorder,
+//     // row length of new row == row length of corresponding old row.
+//     std::vector<MKL_INT> row_ptr(static_cast<size_t>(n) + 1, 0);
+//     for (MKL_INT new_i = 0; new_i < n; ++new_i) {
+//         MKL_INT len = out_rows_end[static_cast<size_t>(new_i)] -
+//                       out_rows_start[static_cast<size_t>(new_i)];
+//         row_ptr[static_cast<size_t>(new_i + 1)] =
+//             row_ptr[static_cast<size_t>(new_i)] + len;
+//     }
+
+//     const MKL_INT out_nnz = row_ptr[static_cast<size_t>(n)];
+//     std::vector<MKL_INT> out_col_indx(static_cast<size_t>(out_nnz), 0);
+//     std::vector<double>  out_values(static_cast<size_t>(out_nnz), 0.0);
+
+//     for (MKL_INT new_i = 0; new_i < n; ++new_i) {
+//         MKL_INT old_i = perm[static_cast<size_t>(new_i)];
+//         MKL_INT old_begin = in_rows_start[old_i] - base;
+//         MKL_INT old_end   = in_rows_end[old_i]   - base;
+
+//         MKL_INT out_begin = row_ptr[static_cast<size_t>(new_i)];
+//         MKL_INT len = old_end - old_begin;
+
+//         for (MKL_INT k = 0; k < len; ++k) {
+//             MKL_INT old_j = in_col_indx[old_begin + k] - base;
+//             double  val   = in_values[old_begin + k];
+
+//             MKL_INT new_j = iperm[static_cast<size_t>(old_j)];
+
+//             out_col_indx[static_cast<size_t>(out_begin + k)] = new_j;
+//             out_values[static_cast<size_t>(out_begin + k)]   = val;
+//         }
+
+//         // Sort columns within this row
+//         auto first_col = out_col_indx.begin() + out_begin;
+//         auto last_col  = first_col + len;
+//         auto first_val = out_values.begin() + out_begin;
+
+//         std::vector<std::pair<MKL_INT,double>> tmp;
+//         tmp.reserve(static_cast<size_t>(len));
+//         for (MKL_INT k = 0; k < len; ++k) {
+//             tmp.emplace_back(*(first_col + k), *(first_val + k));
+//         }
+//         std::sort(tmp.begin(), tmp.end(),
+//                   [](const auto& a, const auto& b) { return a.first < b.first; });
+
+//         for (MKL_INT k = 0; k < len; ++k) {
+//             *(first_col + k) = tmp[static_cast<size_t>(k)].first;
+//             *(first_val + k) = tmp[static_cast<size_t>(k)].second;
+//         }
+//     }
+
+//     // Convert row_ptr into MKL rows_start / rows_end
+//     for (MKL_INT i = 0; i < n; ++i) {
+//         out_rows_start[static_cast<size_t>(i)] = row_ptr[static_cast<size_t>(i)];
+//         out_rows_end[static_cast<size_t>(i)]   = row_ptr[static_cast<size_t>(i + 1)];
+//     }
+
+//     // Convert to one-based if input used one-based
+//     if (indexing == SPARSE_INDEX_BASE_ONE) {
+//         for (MKL_INT i = 0; i < n; ++i) {
+//             out_rows_start[static_cast<size_t>(i)] += 1;
+//             out_rows_end[static_cast<size_t>(i)]   += 1;
+//         }
+//         for (MKL_INT& c : out_col_indx) c += 1;
+//     }
+
+//     // -------------------------------------------------------------------------
+//     // 6) Create MKL CSR handle
+//     // -------------------------------------------------------------------------
+//     PermutedMKLCSR result;
+//     result.nrows = n;
+//     result.ncols = n;
+//     result.part = std::move(part);
+//     result.perm = std::move(perm);
+//     result.iperm = std::move(iperm);
+//     result.block_ptr = std::move(block_ptr);
+//     result.rows_start = std::move(out_rows_start);
+//     result.rows_end   = std::move(out_rows_end);
+//     result.col_indx   = std::move(out_col_indx);
+//     result.values     = std::move(out_values);
+
+//     check_sparse_status(
+//         mkl_sparse_d_create_csr(
+//             &result.A,
+//             indexing,
+//             n,
+//             n,
+//             result.rows_start.data(),
+//             result.rows_end.data(),
+//             result.col_indx.data(),
+//             result.values.data()
+//         ),
+//         "mkl_sparse_d_create_csr failed for reordered matrix"
+//     );
+
+//     // Optional but good practice
+//     check_sparse_status(
+//         mkl_sparse_order(result.A),
+//         "mkl_sparse_order failed on reordered matrix"
+//     );
+
+//     return result;
+// }
