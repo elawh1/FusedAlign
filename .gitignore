@@ -3,3 +3,5 @@ phone-email.mat
 Makefile_old
 experiments/*
 /Parrot/datasets/*
+/Parrot/parrot
+/Parrot/parrot_cuda

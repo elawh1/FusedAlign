@@ -61,8 +61,12 @@ do {                                                                           \
 // }
 
 std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vector<MKL_INT> anchors, MKL_INT n, MKL_INT avg_nnz_per_n, bool directed, float restart_prob, int max_iters, bool connect_isolated, const std::vector<double>& graph_edgelist) {
-    matrix_descr descr;
-    descr.type = SPARSE_MATRIX_TYPE_GENERAL;
+    
+    
+    
+    
+    // matrix_descr descr;
+    // descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     auto time_0 = std::chrono::high_resolution_clock::now();
     
     //connect isolated nodes and row normalize A  
