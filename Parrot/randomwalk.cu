@@ -1,80 +1,11 @@
-#ifdef MKL_AVAILABLE
-#include <mkl.h>
-#include <omp.h>
-#include <mkl_vml.h>
-#endif
-#include <cinttypes>   
-#include <iostream>
-#include <cassert>
-#include <cmath>
-#include <algorithm>
-#include <fstream>
-#include <chrono>
-#include <unordered_map>
-#include <numeric>
-#include <set>
+#include "cuda_helper.cuh"
+#include "helper.h"
 
-
-#include <cstdio>
-#include <cstdlib>
-#include <vector>
-
-#include <cuda_runtime.h>
-#include <cusparse.h>
-#include <cublas_v2.h>
-
-
-#define CHECK_CUDA(call)                                                         \
-    do {                                                                         \
-        cudaError_t status_ = (call);                                            \
-        if (status_ != cudaSuccess) {                                            \
-            fprintf(stderr, "CUDA error at %s:%d: %s\n",                         \
-                    __FILE__, __LINE__, cudaGetErrorString(status_));            \
-            std::exit(EXIT_FAILURE);                                             \
-        }                                                                        \
-    } while (0)
-
-#define CHECK_CUSPARSE(call)                                                     \
-    do {                                                                         \
-        cusparseStatus_t status_ = (call);                                       \
-        if (status_ != CUSPARSE_STATUS_SUCCESS) {                                \
-            fprintf(stderr, "cuSPARSE error at %s:%d: %d\n",                     \
-                    __FILE__, __LINE__, static_cast<int>(status_));              \
-            std::exit(EXIT_FAILURE);                                             \
-        }                                                                        \
-    } while (0)
-
-#define CHECK_CUBLAS(call)                                                     \
-do {                                                                           \
-    cublasStatus_t st__ = (call);                                              \
-    if (st__ != CUBLAS_STATUS_SUCCESS) {                                       \
-        std::cerr << "cuBLAS error at " << __FILE__ << ":" << __LINE__         \
-                  << " -> status " << static_cast<int>(st__) << std::endl;     \
-        std::exit(EXIT_FAILURE);                                               \
-    }                                                                          \
-} while (0)
-
-// __global__
-// void get_batch_rwr_scores_cuda(double* res, float* graph, int* anchors, int n, int avg_nnz_per_n, bool directed, float restart_prob, int max_iters, bool connect_isolated)
-// {
-//   printf("cuda\n");
-// }
-
-std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vector<MKL_INT> anchors, MKL_INT n, MKL_INT avg_nnz_per_n, bool directed, float restart_prob, int max_iters, bool connect_isolated, const std::vector<double>& graph_edgelist) {
+void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> anchors, MKL_INT n, MKL_INT avg_nnz_per_n, bool directed, float restart_prob, int max_iters, bool connect_isolated, std::vector<double>& Xnext_vals) {
     
-    
-    
-    
-    // matrix_descr descr;
-    // descr.type = SPARSE_MATRIX_TYPE_GENERAL;
-    auto time_0 = std::chrono::high_resolution_clock::now();
-    
-    //connect isolated nodes and row normalize A  
-    std::vector<double> all_ones(n, (double) 1.0);
-    std::vector<double> graph_row_sum(n, (double) 0.0);
-    sparse_status_t status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph, descr, all_ones.data(), (double) 1.0, graph_row_sum.data());
-    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
-    
+    matrix_descr descr;
+    descr.type = SPARSE_MATRIX_TYPE_GENERAL;
+
     // int n_int = (int) n;
     // int nnz = graph_edgelist.size() / 2;
     // printf("%d %d\n", n_int, nnz);
@@ -167,85 +98,13 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
     // cudaFree(d_y);
     // return graph_row_sum;
 
-
-    // -----    TODO   -----  Connect isolated nodes
-    std::vector<MKL_INT> isolated;
-    bool isolated_node = false ;
-    for (MKL_INT i = 0; i < n; ++i) {
-        if (graph_row_sum[i] == 0.0) {
-            isolated.push_back(i);
-            isolated_node = true;
-        }   
-    }
-    printf("num of isolated %ld\n", isolated.size());
-    sparse_matrix_t graph_connected = nullptr;
-    if(isolated_node) {
-        printf("connecting isolated nodes\n");
-
-        std::vector<double> edge_list;
-
-        // connect to #avg_nnz_per_n number of random nodes
-        edge_list.reserve(isolated.size() * avg_nnz_per_n * 2);
-        std::srand(std::time(0));
-        for (MKL_INT i : isolated) {
-            // printf("isolated node %d\n", i);
-            std::set<MKL_INT> random_nodes = {};
-            while(random_nodes.size() < avg_nnz_per_n) {
-                MKL_INT random_num = std::rand() % n;
-                if ( random_nodes.find(random_num) !=  random_nodes.end()) continue;
-                if ( random_num >= n )          std::cerr << "random num generated out of bound\n" << std::endl; 
-                random_nodes.insert(random_num);
-                edge_list.push_back(static_cast<double>(i));
-                edge_list.push_back(static_cast<double>(random_num));
-            }
-            // update row sum directly
-            graph_row_sum[i] = static_cast<double>(avg_nnz_per_n);
-            // printf("isolated node %d connected to %d nodes\n", i, edge_list.size());
-        }
-        
-        // printf("connect isolated nodes : num fo edges to add %d\n", edge_list.size()/2);
-        // build CSR matrix (values are implicitly 1.0 inside)
-        sparse_matrix_t add_mat = make_mat_from_edgelist(edge_list, n, n);
-        //add add_mat to original graph
-        status = mkl_sparse_d_add(SPARSE_OPERATION_NON_TRANSPOSE,graph, 1.0, add_mat, &graph_connected);
-        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_add failed in get_batch_rwr_scores");
-
-        mkl_sparse_destroy(add_mat);
-
-        // //update graph_row_sum
-        status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph_connected, descr, all_ones.data(), (double) 1.0, graph_row_sum.data());
-        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
-    }
-    else {
-        graph_connected = graph;
-    }
-
-    auto time_1 = std::chrono::high_resolution_clock::now();
-
-    MKLCSC Dinv = make_diag_csc(graph_row_sum, n, n, true);
-    sparse_matrix_t graph_norm = nullptr;    
-    mkl_sparse_optimize(Dinv.spMat);
-    mkl_sparse_optimize(graph_connected);
-    status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Dinv.spMat, graph_connected, &graph_norm);
-    // auto status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Dinv.spMat, graph, &graph_norm);
-    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_spmm failed in get_batch_rwr_scores");
-    mkl_sparse_optimize(graph_norm);
-    sparse_matrix_t graph_norm_csr = nullptr;
-    status = mkl_sparse_convert_csr(graph_norm, SPARSE_OPERATION_NON_TRANSPOSE, &graph_norm_csr);
-    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_convert_csr failed in get_batch_rwr_scores");
-    status = mkl_sparse_optimize(graph_norm_csr);
-    if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_optimize failed in get_batch_rwr_scores");  
-    
-    // sparse_matrix_t graph_norm_csr = graph_row_normalize_connect_isolated( graph);
-
-
     MKL_INT rows, cols;
     MKL_INT *row_start, *row_end, *col_indx;
     double *values;
     sparse_index_base_t indexing;
 
     mkl_sparse_d_export_csr(
-        graph_norm_csr,
+        graph,
         &indexing,
         &rows,
         &cols,
@@ -268,7 +127,7 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
     }
     int nnz = h_rowPtr[rows];
 
-    auto time_2 = std::chrono::high_resolution_clock::now();
+    auto time_0 = std::chrono::high_resolution_clock::now();
     int l = anchors.size();
     //one hot encoding E matrix
     std::vector<double> E(n * l, 0.0);
@@ -278,7 +137,7 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
     //these are column major
     // std::vector<double> X_vals(n*l, 1.0);      // X(t), all ones
     std::vector<double> X_vals = E;
-    std::vector<double> Xnext_vals(n*l, 0.0);
+    Xnext_vals.assign(n*l, 0.0);
 
     // ------------------------------------------------------------
     // Allocate GPU memory
@@ -305,8 +164,10 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
     CHECK_CUDA(cudaMemcpy(d_Xnext, Xnext_vals.data(), n * l * sizeof(double), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_E, E.data(), n * l * sizeof(double), cudaMemcpyHostToDevice));
 
-    cusparseHandle_t handle;
-    CHECK_CUSPARSE(cusparseCreate(&handle));
+    cusparseHandle_t cusparseH;
+    cublasHandle_t cublasH;
+    CHECK_CUSPARSE(cusparseCreate(&cusparseH));
+    CHECK_CUBLAS(cublasCreate(&cublasH));
 
     cusparseSpMatDescr_t matA;
     cusparseDnMatDescr_t matX, matXnext; 
@@ -336,20 +197,21 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
         d_Xnext,
         CUDA_R_64F,
         CUSPARSE_ORDER_COL));
-
-    const double alpha = 1.0 - restart_prob;
+    
+    double alpha = (double)(1 - restart_prob);
+    double beta = 1.0;
 
     size_t bufferSize = 0;
     void* dBuffer = nullptr;
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(
-        handle,
+        cusparseH,
         CUSPARSE_OPERATION_TRANSPOSE,
         CUSPARSE_OPERATION_NON_TRANSPOSE,
         &alpha,
         matA,
         matX,
-        &restart_prob,
+        &beta,
         matXnext,
         CUDA_R_64F,
         CUSPARSE_SPMM_ALG_DEFAULT,
@@ -357,50 +219,53 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
 
     CHECK_CUDA(cudaMalloc(&dBuffer, bufferSize));
 
-    auto time_3 = std::chrono::high_resolution_clock::now();
+    auto time_1 = std::chrono::high_resolution_clock::now();
+    auto add_after_spmm_time = 0, spmm_time=0, swap_after_spmm_time=0;
     for(int i=0; i < max_iters-1; i++) {
-        // Xnext_vals = E;
-        // // const sparse_operation_t operation, const double alpha, const sparse_matrix_t A, const struct matrix_descr descr, const sparse_layout_t layout, const double *B, const MKL_INT columns, const MKL_INT ldb, const double beta, double *C, const MKL_INT ldc);
-        // auto status = mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, (double) (1-restart_prob), graph_norm_csr, descr, SPARSE_LAYOUT_COLUMN_MAJOR, X_vals.data(), l, n, restart_prob, Xnext_vals.data(), n);
-        // if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
-        // X_vals = Xnext_vals;
+        auto time_1_0 = std::chrono::high_resolution_clock::now();
 
-        // Xnext = E
-        CHECK_CUDA(cudaMemcpy(
-            d_Xnext,
-            d_E,
-            n * l * sizeof(double),
-            cudaMemcpyDeviceToDevice));
-
-        // Xnext = (1-r) * A^T * X + r * Xnext
         CHECK_CUSPARSE(cusparseSpMM(
-            handle,
+            cusparseH,
             CUSPARSE_OPERATION_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
             matA,
             matX,
-            &restart_prob,
+            &beta,
             matXnext,
             CUDA_R_64F,
             CUSPARSE_SPMM_ALG_DEFAULT,
             dBuffer));
 
-        // Swap X and Xnext for next iteration
-        std::swap(d_X, d_Xnext);
-        std::swap(matX, matXnext);
+        auto time_1_1 = std::chrono::high_resolution_clock::now();
+        spmm_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_1 - time_1_0).count();
 
-        // Update descriptor value pointers after swap
+        double one = 1.0;
+        CHECK_CUBLAS(cublasDaxpy(
+            cublasH,
+            n * l,
+            &one,
+            d_E,
+            1,
+            d_Xnext,
+            1));
+
+        auto time_1_2 = std::chrono::high_resolution_clock::now();
+        add_after_spmm_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_2 - time_1_1).count();
+
+        std::swap(d_X, d_Xnext);
         CHECK_CUSPARSE(cusparseDnMatSetValues(matX, d_X));
         CHECK_CUSPARSE(cusparseDnMatSetValues(matXnext, d_Xnext));
 
+        auto time_1_3 = std::chrono::high_resolution_clock::now();
+        swap_after_spmm_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_3 - time_1_2).count();
+
     }
     CHECK_CUDA(cudaDeviceSynchronize());
-    auto time_4= std::chrono::high_resolution_clock::now();
-    std::cout << "connect isolated and normalize : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_0).count()  
-    << " rwr before iterations: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()  
-    << " rwr iteration=100: " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()  
-    << " ms" << std::endl;
+    auto time_2 = std::chrono::high_resolution_clock::now();
+    std::cout << "in get_batch_rwr_scores generate E " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
+    " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()  <<
+    " spmm time " << spmm_time  <<  " add after spmm time " << add_after_spmm_time  <<  " swap after spmm time " << swap_after_spmm_time  << std::endl;
 
 
     Xnext_vals.assign(n * l, 0.0);
@@ -413,7 +278,8 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
     CHECK_CUSPARSE(cusparseDestroyDnMat(matX));
     CHECK_CUSPARSE(cusparseDestroyDnMat(matXnext));
     CHECK_CUSPARSE(cusparseDestroySpMat(matA));
-    CHECK_CUSPARSE(cusparseDestroy(handle));
+    CHECK_CUSPARSE(cusparseDestroy(cusparseH));
+    CHECK_CUBLAS(cublasDestroy(cublasH));
 
     CHECK_CUDA(cudaFree(d_rowPtr));
     CHECK_CUDA(cudaFree(d_colInd));
@@ -422,15 +288,12 @@ std::vector<double>  get_batch_rwr_scores_cuda(sparse_matrix_t graph, std::vecto
     CHECK_CUDA(cudaFree(d_Xnext));
     CHECK_CUDA(cudaFree(d_E));
 
-    //column major dense matrix nxl
-	return Xnext_vals;
 }
 
 
-
-std::vector<double> get_product_rwr_mat_cuda( sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, const std::vector<double>& in_cross_dist, 
+std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, const std::vector<double>& in_cross_dist, 
     int n1, int n2, int avg_nnz1_per_n1, int avg_nnz2_per_n2,
-    double rwr_restart_prob, double gamma, int max_iters = 50, double tol = 1e-2) {
+    double rwr_restart_prob, double gamma, int max_iters, double tol) {
     matrix_descr descr;
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     auto time_0 = std::chrono::high_resolution_clock::now();
