@@ -1,5 +1,11 @@
 parrot.cpp.EMPTY_BACKUP_DEC21
 phone-email.mat
 Makefile_old
-experiments/*
-/Parrot/datasets/*
+Makefile_april20
+Parrot/parrot
+Parrot/parrot_cuda
+/Parrot/datasets/
+/experiments/
+/Parrot-Row/
+Parrot/parrotMetis
+Parrot/backup/

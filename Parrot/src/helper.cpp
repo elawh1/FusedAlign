@@ -1,31 +1,5 @@
-#ifdef MKL_AVAILABLE
-#include <mkl.h>
-#include <omp.h>
-#include <mkl_vml.h>
-#endif
-#include <cstdio>
-#include <cinttypes>   
-#include <iostream>
-#include <vector>
-#include <cassert>
-#include <cmath>
-#include <algorithm>
-#include <fstream>
-#include <chrono>
-#include <unordered_map>
-#include <numeric>
-#include <set>
-// #include <metis.h>
+#include "helper.h"
 #include "helper2.h"
-#include "fused_spmm.h"
-#include "mkl_spblas.h"
-
-struct MKLCSC {
-    sparse_matrix_t spMat = nullptr;
-    std::vector<MKL_INT> col_start, col_end, row_ind;
-    std::vector<double>  vals;
-    ~MKLCSC() { if (spMat) mkl_sparse_destroy(spMat); }
-};
 
 std::vector<double> sparse_to_dense_colmajor(sparse_matrix_t A, MKL_INT nrows, MKL_INT ncols) {
     // Output: column-major dense matrix
@@ -525,7 +499,7 @@ bool out_cross_dist_converge( std::vector<double>& out_cross_dist, std::vector<d
 
 std::vector<double> get_product_rwr_mat_fused( sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, const std::vector<double>& in_cross_dist, 
     int n1, int n2, int avg_nnz1_per_n1, int avg_nnz2_per_n2,
-    double rwr_restart_prob, double gamma, int max_iters = 50, double tol = 1e-2) {
+    double rwr_restart_prob, double gamma, int max_iters, double tol) {
     matrix_descr descr;
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     auto time_0 = std::chrono::high_resolution_clock::now();
@@ -592,7 +566,7 @@ std::vector<double> get_product_rwr_mat_fused( sparse_matrix_t graph1_py, sparse
 }
 
 void get_product_rwr_mat( sparse_matrix_t graph1_normalized, sparse_matrix_t graph2_normalized, const std::vector<double>& in_cross_dist, 
-    int n1, int n2, double rwr_restart_prob, double gamma, std::vector<double>& out_cross_dist, int max_iters = 50, double tol = 1e-2) {
+    int n1, int n2, double rwr_restart_prob, double gamma, std::vector<double>& out_cross_dist, int max_iters, double tol) {
     matrix_descr descr;
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     auto time_0 = std::chrono::high_resolution_clock::now();
@@ -702,7 +676,7 @@ void get_product_rwr_mat( sparse_matrix_t graph1_normalized, sparse_matrix_t gra
 
 void get_product_rwr_mat_new( sparse_matrix_t graph1_normalized, sparse_matrix_t graph2_normalized, 
     const std::vector<double>& in_cross_dist, MKL_INT n1, MKL_INT n2, double rwr_restart_prob, double gamma, 
-    std::vector<double>& out_cross_dist, int max_iters = 50, double tol = 1e-2) {
+    std::vector<double>& out_cross_dist, int max_iters, double tol) {
     size_t N = (size_t)n1 * (size_t)n2;
     if (out_cross_dist.size() != N || in_cross_dist.size() != N)    throw std::runtime_error("in cross dist computation size mismatch");
     // const size_t CHUNK = (size_t)std::numeric_limits<MKL_INT>::max();
@@ -835,6 +809,31 @@ void minaa_v3_dense( std::vector<double>& Cost, const std::vector<double>& b, in
     }
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
+}
+
+void euclidean_distance_mat_vec( const std::vector<double>& X, const std::vector<double>& y, int n, int d, std::vector<double>& out_vec ) {
+    #pragma omp parallel for 
+    for (int i = 0; i < n; ++i) {
+        out_vec[i]  = 0.0;
+        const double* row = &X[(size_t)i * d];
+        for (int j = 0; j < d; ++j) {
+            double diff = row[j] - y[j];
+            out_vec[i] += diff * diff;
+        }
+    }
+}
+
+void row_avg_square_dense(const std::vector<double>& matrix, size_t n, size_t d, std::vector<double>& row_sum_sqr) {
+    #pragma omp parallel for
+    for (size_t i = 0; i < n; ++i) {
+        double square_sum = 0.0;
+        const double* row = &matrix[i * d]; 
+        for (size_t j = 0; j < d; ++j) {
+            double val = row[j];
+            square_sum += (val * val) / d;
+        }
+        row_sum_sqr[i] = square_sum;
+    }
 }
 
 void row_avg_square ( sparse_matrix_t& intra_dist, int n, std::vector<double>& row_avg_sqr) {

@@ -1,29 +1,23 @@
 CXX ?= g++
-CXXFLAGS = -O3 -std=c++17 -Wall
+CXXFLAGS = -O3 -std=c++17 -Wall -Iinclude 
 
 TARGET = parrot
-SRC = parrot.cpp
-HDR = helper.h helper2.h fused_spmm.h accuracy.h
+SRC = src/parrot.cpp src/helper.cpp src/helper2.cpp src/fused_spmm.cpp src/accuracy.cpp
+HDR = include/helper.h include/helper2.h include/fused_spmm.h include/accuracy.h
+
 # ---- BLAS / MKL ----
-# Default: OpenBLAS
 LIBS = -lopenblas
 
-# Optional: Intel MKL
-# Usage:
-#   export MKLROOT=/path/to/mkl
-#   make
 ifdef MKLROOT
 CXXFLAGS += -march=native -fopenmp -DMKL_AVAILABLE -DMKL_ILP64
 LIBS = -L$(MKLROOT)/lib/intel64 \
        -lmkl_intel_ilp64 -lmkl_core -lmkl_intel_thread -liomp5 -lpthread -lm -ldl
 endif
 
-
 all: $(TARGET)
 
-$(TARGET): $(SRC) $(HDR) 
+$(TARGET): $(SRC) $(HDR)
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LIBS)
 
 clean:
 	rm -f $(TARGET)
-

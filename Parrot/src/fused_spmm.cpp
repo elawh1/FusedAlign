@@ -1,30 +1,31 @@
-#include <iostream>
-#include <vector>
-#include <mkl.h>
-#ifdef MKL_AVAILABLE
-#include <mkl.h>
-#include <mkl_vml.h>
-#include <omp.h>
-#include <set>
-#include <map>
-#endif
-#include <string>
-#include <sstream>
-#include <algorithm>
-#include <fstream>
-#include <ctime> 
-#include <chrono>
-#include <cstdio>
-#include <cinttypes>  
-#include <random>
-#include <cmath> 
-#include <cstddef>
-#include <cstring> // for memset
-#include <cassert>
-#include <unordered_set>
-#include <iostream>
-#include <stdexcept>
-#include <thread>
+// #include <iostream>
+// #include <vector>
+// #include <mkl.h>
+// #ifdef MKL_AVAILABLE
+// #include <mkl.h>
+// #include <mkl_vml.h>
+// #include <omp.h>
+// #include <set>
+// #include <map>
+// #endif
+// #include <string>
+// #include <sstream>
+// #include <algorithm>
+// #include <fstream>
+// #include <ctime> 
+// #include <chrono>
+// #include <cstdio>
+// #include <cinttypes>  
+// #include <random>
+// #include <cmath> 
+// #include <cstddef>
+// #include <cstring> // for memset
+// #include <cassert>
+// #include <unordered_set>
+// #include <iostream>
+// #include <stdexcept>
+// #include <thread>
+#include "fused_spmm.h"
 
 // Given: A (n1 x n1), B (n1 x n2), C (n2 x n2), D (n1 x n2), block_size
 // All dense matrices are column-major.

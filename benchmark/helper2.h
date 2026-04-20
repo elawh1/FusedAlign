@@ -14,6 +14,46 @@
 #include <limits>
 #include <numeric>
 #include <utility>
+#include <cinttypes> 
+#include <set>
+
+void make_col_and_row_major_from_col_major(
+    const std::vector<double>& D_col,   // input: n x k, column-major
+    MKL_INT n,
+    MKL_INT k,
+    std::vector<double>& D_row
+) {
+    if ((MKL_INT)D_col.size() != (size_t)(n * k)) {
+        throw std::runtime_error("D size does not match n*k");
+    }
+    D_row.resize(n * k);    // will store same logical matrix in row-major
+
+    for (MKL_INT i = 0; i < n; ++i) {
+        for (MKL_INT j = 0; j < k; ++j) {
+            D_row[i * k + j] = D_col[i + j * n];
+        }
+    }
+}
+
+
+
+template <typename T>
+void generate_random_dense(std::size_t n1, std::size_t n2, std::vector<T>& out) {
+    static_assert(std::is_floating_point<T>::value,
+                  "T must be float, double, or long double");
+
+    if (n1 != 0 && n2 > static_cast<std::size_t>(-1) / n2) {
+        throw std::overflow_error("n1 * n2 is too large");
+    }
+    const std::size_t size = n1 * n2;
+    out.resize(size);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<T> dist(static_cast<T>(0.0), static_cast<T>(1.0));
+    for (std::size_t i = 0; i < size; ++i) {
+        out[i] = dist(gen);
+    }
+}
 
 auto has_nan = [](const std::vector<double>& v){
     for (double x : v) if (std::isnan(x)) return true;
@@ -109,7 +149,7 @@ double getMin(const std::vector<double>& v) {
     return min;
 }
 
-void load_config(const std::string& data_path, MKL_INT& g1_num_nodes, MKL_INT& g2_num_nodes, bool& use_attr, bool& directed, int& inner_iters, int& outer_iters) {
+void load_config(const std::string& data_path, MKL_INT& g1_num_nodes, MKL_INT& g2_num_nodes, bool& use_attr, bool& directed) {
     std::ifstream fin(data_path + "/config.txt");
     if(!fin) {
         throw std::runtime_error("cannot open config.txt");
@@ -123,8 +163,6 @@ void load_config(const std::string& data_path, MKL_INT& g1_num_nodes, MKL_INT& g
             else if (key == "g2_num_nodes") g2_num_nodes = std::stoi(eq);
             else if (key == "use_attr") use_attr = (eq == "1");
             else if (key == "directed") directed = (eq == "1");
-            else if (key == "outer_iter") outer_iters = std::stoi(eq);
-            else if (key == "inner_iter") inner_iters = std::stoi(eq);
         }
     }
 }
@@ -225,17 +263,145 @@ bool compare_sparse_exact(
     return true;
 }
 
+// sparse_matrix_t make_mat_from_edgelist_csc(const std::vector<double>& edgelist,
+//                                            MKL_INT m,
+//                                            MKL_INT n) {
+//     if (edgelist.size() % 2 != 0) {
+//         throw std::runtime_error("edgelist size must be even");
+//     }
+
+//     MKL_INT nnz = static_cast<MKL_INT>(edgelist.size() / 2);
+
+//     std::vector<MKL_INT> rows(nnz), cols(nnz);
+//     std::vector<double> vals(nnz, 1.0);
+
+//     for (MKL_INT i = 0; i < nnz; ++i) {
+//         rows[i] = static_cast<MKL_INT>(edgelist[2 * i]);
+//         cols[i] = static_cast<MKL_INT>(edgelist[2 * i + 1]);
+
+//         if (rows[i] < 0 || rows[i] >= m || cols[i] < 0 || cols[i] >= n) {
+//             throw std::runtime_error("edge index out of bounds");
+//         }
+//     }
+
+//     sparse_matrix_t A_coo = nullptr;
+//     auto st = mkl_sparse_d_create_coo(&A_coo,
+//                                       SPARSE_INDEX_BASE_ZERO,
+//                                       m, n, nnz,
+//                                       rows.data(), cols.data(), vals.data());
+//     if (st != SPARSE_STATUS_SUCCESS) {
+//         throw std::runtime_error("create_coo failed");
+//     }
+
+//     sparse_matrix_t A_csc = nullptr;
+
+//     // CSC(A) is equivalent to CSR(A^T)
+//     st = mkl_sparse_convert_csr(A_coo,
+//                                 SPARSE_OPERATION_TRANSPOSE,
+//                                 &A_csc);
+//     if (st != SPARSE_STATUS_SUCCESS) {
+//         mkl_sparse_destroy(A_coo);
+//         throw std::runtime_error("convert to CSC-like CSR(A^T) failed");
+//     }
+
+//     mkl_sparse_destroy(A_coo);
+//     return A_csc;
+// }
+
+struct CSCStorage {
+    std::vector<MKL_INT> col_start;
+    std::vector<MKL_INT> col_end;
+    std::vector<MKL_INT> row_ind;
+    std::vector<double>  vals;
+};
+
+static inline void check_mkl(sparse_status_t st, const char* msg) {
+    if (st != SPARSE_STATUS_SUCCESS) {
+        printf("%s\n", st);
+        throw std::runtime_error(msg);
+    }
+}
+
+void make_mat_from_edgelist_csc(const std::vector<double>& edgelist,
+                                MKL_INT m,
+                                MKL_INT n,
+                                sparse_matrix_t& graph_csc,
+                                CSCStorage& storage) {
+    if (edgelist.size() % 2 != 0) {
+        throw std::runtime_error("edgelist size must be even");
+    }
+
+    if (graph_csc != nullptr) {
+        mkl_sparse_destroy(graph_csc);
+        graph_csc = nullptr;
+    }
+
+    const MKL_INT nnz = static_cast<MKL_INT>(edgelist.size() / 2);
+
+    // Count entries per column
+    std::vector<MKL_INT> col_count(n, 0);
+    for (MKL_INT k = 0; k < nnz; ++k) {
+        MKL_INT r = static_cast<MKL_INT>(edgelist[2 * k]);
+        MKL_INT c = static_cast<MKL_INT>(edgelist[2 * k + 1]);
+
+        if (r < 0 || r >= m || c < 0 || c >= n) {
+            throw std::runtime_error("edge index out of bounds");
+        }
+        col_count[c]++;
+    }
+
+    // Persistent CSC storage
+    storage.col_start.resize(n);
+    storage.col_end.resize(n);
+    storage.row_ind.resize(nnz);
+    storage.vals.assign(nnz, 1.0);
+
+    // Build CSC column pointers
+    MKL_INT pos = 0;
+    for (MKL_INT j = 0; j < n; ++j) {
+        storage.col_start[j] = pos;
+        pos += col_count[j];
+        storage.col_end[j] = pos;
+    }
+
+    // Fill row indices
+    std::vector<MKL_INT> next = storage.col_start;
+    for (MKL_INT k = 0; k < nnz; ++k) {
+        MKL_INT r = static_cast<MKL_INT>(edgelist[2 * k]);
+        MKL_INT c = static_cast<MKL_INT>(edgelist[2 * k + 1]);
+
+        MKL_INT p = next[c]++;
+        storage.row_ind[p] = r;
+        storage.vals[p]    = 1.0;
+    }
+
+    check_mkl(
+        mkl_sparse_d_create_csc(&graph_csc,
+                                SPARSE_INDEX_BASE_ZERO,
+                                m, n,
+                                storage.col_start.data(),
+                                storage.col_end.data(),
+                                storage.row_ind.data(),
+                                storage.vals.data()),
+        "mkl_sparse_d_create_csc failed"
+    );
+
+    // Optional:
+    check_mkl(mkl_sparse_optimize(graph_csc), "mkl_sparse_optimize failed");
+}
 
 sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int m, int n) {
     MKL_INT nnz  = edgelist.size() / 2;
 	std::vector<MKL_INT> rows(nnz), cols(nnz);
 	std::vector<double> vals(nnz);
+    printf("csr nnz %d\n", nnz);
 	for(int i=0; i < nnz; i++) {
         vals[i] = 1.0;
         rows[i] = (MKL_INT) edgelist[2*i];
         cols[i] = (MKL_INT) edgelist[2*i+1];	
     }
 
+    
 	sparse_matrix_t A = nullptr;
     auto st = mkl_sparse_d_create_coo(&A, SPARSE_INDEX_BASE_ZERO, m, n, nnz, rows.data(), cols.data(), vals.data());
     if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("create_coo failed");
@@ -243,84 +409,241 @@ sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int 
 
     sparse_matrix_t A_csr;
     mkl_sparse_convert_csr(A, SPARSE_OPERATION_NON_TRANSPOSE, &A_csr);
-    
+    mkl_sparse_optimize(A_csr);
     mkl_sparse_destroy(A);
 
     return A_csr;
 }
 
-// sparse_matrix_t make_mat_from_edgelist_symmetric(const std::vector<double>& edgelist, int m, int n) {
-//     MKL_INT nnz = 0;
-//     std::vector<MKL_INT> rows, cols;
-//     std::vector<double> vals;
-//     rows.reserve(edgelist.size()*2);
-//     cols.reserve(edgelist.size()*2);
-//     vals.reserve(edgelist.size()*2);
-// 	// std::vector<MKL_INT> rows(edgelist.size()), cols(edgelist.size());
-// 	// std::vector<double> vals(edgelist.size());
-// 	for(int i=0; i < edgelist / 2; i++) {
-//         vals.push_back(1.0);
-//         rows.push_back((MKL_INT) edgelist[2*i]);
-//         cols.push_back((MKL_INT) edgelist[2*i+1]);
-//         nnz++;
-//         if (edgelist[2*i] != edgelist[2*i+1]) {
-//             vals.push_back(1.0);
-//             rows.push_back((MKL_INT) edgelist[2*i+1]);
-//             cols.push_back((MKL_INT) edgelist[2*i]);
-//             nnz++;
-//         }
-//     }
-//     rows.resize(nnz);
-//     cols.resize(nnz);
-//     vals.resize(nnz);
+struct SparseCSRCSCStorage {
+    // CSR storage
+    std::vector<MKL_INT> csr_row_start;
+    std::vector<MKL_INT> csr_row_end;
+    std::vector<MKL_INT> csr_col_ind;
+    std::vector<double>  csr_vals;
 
-// 	sparse_matrix_t A = nullptr;
-//     auto st = mkl_sparse_d_create_coo(&A, SPARSE_INDEX_BASE_ZERO, m, n, nnz, rows.data(), cols.data(), vals.data());
-//     if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("create_coo failed");
-//     mkl_sparse_optimize(A);
+    // CSC storage
+    std::vector<MKL_INT> csc_col_start;
+    std::vector<MKL_INT> csc_col_end;
+    std::vector<MKL_INT> csc_row_ind;
+    std::vector<double>  csc_vals;
 
-//     sparse_matrix_t A_csr;
-//     mkl_sparse_convert_csr(A, SPARSE_OPERATION_NON_TRANSPOSE, &A_csr);
-    
-//     mkl_sparse_destroy(A);
+    ~SparseCSRCSCStorage() = default;
+};
 
-//     return A_csr;
-// }
-
-void print_sparse_matrix_info(sparse_matrix_t A, const char* name = "matrix") {
-    sparse_index_base_t indexing;
-    MKL_INT rows, cols;
-    MKL_INT *row_start, *row_end, *col_indx;
-    double *values;
-
-    sparse_status_t status = mkl_sparse_d_export_csr(
-        A, &indexing, &rows, &cols,
-        &row_start, &row_end, &col_indx, &values
-    );
-
-    if (status != SPARSE_STATUS_SUCCESS) {
-        printf("Error: cannot export %s (status=%d)\n", name, status);
-        return;
+void make_csr_csc_edgelist(const std::vector<double>& edgelist,
+                           MKL_INT m,
+                           MKL_INT n,
+                           sparse_matrix_t& graph_csr,
+                           sparse_matrix_t& graph_csc,
+                           SparseCSRCSCStorage& storage) {
+    if (edgelist.size() % 2 != 0) {
+        throw std::runtime_error("edgelist size must be even");
     }
 
-    printf("=== %s ===\n", name);
-    printf("Dimensions: %" PRId64 " x %" PRId64 "\n", (int64_t)rows, (int64_t)cols);
-    printf("Index base: %s\n", (indexing == SPARSE_INDEX_BASE_ZERO) ? "0-based" : "1-based");
+    if (graph_csr != nullptr) {
+        mkl_sparse_destroy(graph_csr);
+        graph_csr = nullptr;
+    }
+    if (graph_csc != nullptr) {
+        mkl_sparse_destroy(graph_csc);
+        graph_csc = nullptr;
+    }
 
-    MKL_INT nnz = row_end[rows - 1] - row_start[0];
-    printf("Nonzeros: %" PRId64 "\n", (int64_t)nnz);
+    const MKL_INT nnz = static_cast<MKL_INT>(edgelist.size() / 2);
 
-    printf("Sample entries (row, col, val):\n");
-    MKL_INT printed = 0;
-    for (MKL_INT i = 0; i < rows && printed < 10; ++i) {
-        for (MKL_INT k = row_start[i]; k < row_end[i] && printed < 10; ++k) {
-            printf("(%lld, %lld, %.3f)\n",
-                   (long long)i,
-                   (long long)col_indx[k],
-                   values[k]);
-            printed++;
+    std::vector<MKL_INT> row_count(m, 0);
+    std::vector<MKL_INT> col_count(n, 0);
+
+    for (MKL_INT k = 0; k < nnz; ++k) {
+        MKL_INT r = static_cast<MKL_INT>(edgelist[2 * k]);
+        MKL_INT c = static_cast<MKL_INT>(edgelist[2 * k + 1]);
+
+        if (r < 0 || r >= m || c < 0 || c >= n) {
+            throw std::runtime_error("edge index out of bounds");
+        }
+
+        row_count[r]++;
+        col_count[c]++;
+    }
+
+    // Allocate persistent CSR storage
+    storage.csr_row_start.resize(m);
+    storage.csr_row_end.resize(m);
+    storage.csr_col_ind.resize(nnz);
+    storage.csr_vals.assign(nnz, 1.0);
+
+    // Allocate persistent CSC storage
+    storage.csc_col_start.resize(n);
+    storage.csc_col_end.resize(n);
+    storage.csc_row_ind.resize(nnz);
+    storage.csc_vals.assign(nnz, 1.0);
+
+    // Build CSR row pointers
+    {
+        MKL_INT pos = 0;
+        for (MKL_INT i = 0; i < m; ++i) {
+            storage.csr_row_start[i] = pos;
+            pos += row_count[i];
+            storage.csr_row_end[i] = pos;
         }
     }
+
+    // Build CSC col pointers
+    {
+        MKL_INT pos = 0;
+        for (MKL_INT j = 0; j < n; ++j) {
+            storage.csc_col_start[j] = pos;
+            pos += col_count[j];
+            storage.csc_col_end[j] = pos;
+        }
+    }
+
+    // Working write pointers
+    std::vector<MKL_INT> next_row = storage.csr_row_start;
+    std::vector<MKL_INT> next_col = storage.csc_col_start;
+
+    // Fill CSR and CSC
+    for (MKL_INT k = 0; k < nnz; ++k) {
+        MKL_INT r = static_cast<MKL_INT>(edgelist[2 * k]);
+        MKL_INT c = static_cast<MKL_INT>(edgelist[2 * k + 1]);
+
+        // CSR: row r contains col c
+        MKL_INT p = next_row[r]++;
+        storage.csr_col_ind[p] = c;
+        storage.csr_vals[p]    = 1.0;
+
+        // CSC: col c contains row r
+        MKL_INT q = next_col[c]++;
+        storage.csc_row_ind[q] = r;
+        storage.csc_vals[q]    = 1.0;
+    }
+
+    for (int t = 0; t < 10; ++t) {
+        printf("csr_col_ind[%d] = %lld, csr_vals[%d] = %.1f\n",
+            t, (long long)storage.csr_col_ind[t], t, storage.csr_vals[t]);
+    }
+    printf("sizeof(MKL_INT) = %zu\n", sizeof(MKL_INT));
+
+    check_mkl(
+        mkl_sparse_d_create_csr(&graph_csr,
+                                SPARSE_INDEX_BASE_ZERO,
+                                m, n,
+                                storage.csr_row_start.data(),
+                                storage.csr_row_end.data(),
+                                storage.csr_col_ind.data(),
+                                storage.csr_vals.data()),
+        "mkl_sparse_d_create_csr failed"
+    );
+
+    check_mkl(
+        mkl_sparse_d_create_csc(&graph_csc,
+                                SPARSE_INDEX_BASE_ZERO,
+                                m, n,
+                                storage.csc_col_start.data(),
+                                storage.csc_col_end.data(),
+                                storage.csc_row_ind.data(),
+                                storage.csc_vals.data()),
+        "mkl_sparse_d_create_csc failed"
+    );
+
+    check_mkl(mkl_sparse_order(graph_csr), "mkl_sparse_order(graph_csr) failed");
+    // check_mkl(mkl_sparse_order(graph_csc), "mkl_sparse_order(graph_csc) failed");
+}
+
+enum class SparseFormat { CSR, CSC };
+void print_sparse_matrix_info(sparse_matrix_t A,
+                              SparseFormat fmt,
+                              const char* name = "matrix") {
+    sparse_index_base_t indexing;
+    MKL_INT rows, cols;
+    double* values = nullptr;
+
+    printf("=== %s ===\n", name);
+
+    if (fmt == SparseFormat::CSR) {
+        MKL_INT *row_start = nullptr, *row_end = nullptr, *col_indx = nullptr;
+
+        sparse_status_t status = mkl_sparse_d_export_csr(
+            A, &indexing, &rows, &cols,
+            &row_start, &row_end, &col_indx, &values
+        );
+
+        if (status != SPARSE_STATUS_SUCCESS) {
+            printf("Error: cannot export %s as CSR (status=%d)\n", name, status);
+            return;
+        }
+
+        MKL_INT base = (indexing == SPARSE_INDEX_BASE_ZERO) ? 0 : 1;
+
+        printf("Format: CSR\n");
+        printf("Dimensions: %lld x %lld\n", (long long)rows, (long long)cols);
+        printf("Index base: %s\n", (base == 0) ? "0-based" : "1-based");
+
+        MKL_INT nnz = row_end[rows - 1] - row_start[0];
+        printf("Nonzeros: %lld\n", (long long)nnz);
+
+        printf("Sample entries (row, col, val):\n");
+        MKL_INT printed = 0;
+        for (MKL_INT i = 0; i < rows && printed < 10; ++i) {
+            for (MKL_INT k = row_start[i]; k < row_end[i] && printed < 10; ++k) {
+                MKL_INT kk = k - base;   // convert to C-array offset
+                printf("(%lld, %lld, %.3f)\n",
+                       (long long)(i + base),
+                       (long long)col_indx[kk],
+                       values[kk]);
+                printed++;
+            }
+        }
+    } else {
+        MKL_INT *col_start = nullptr, *col_end = nullptr, *row_indx = nullptr;
+        double *values = nullptr;
+
+        sparse_status_t status = mkl_sparse_d_export_csc( A, &indexing, &rows, &cols, &col_start, &col_end, &row_indx, &values);
+
+        if (status != SPARSE_STATUS_SUCCESS) {
+            printf("Error: cannot export %s as CSC (status=%d)\n", name, status);
+            return;
+        }
+
+        printf("Format: CSC\n");
+        printf("Dimensions: %lld x %lld\n", (long long)rows, (long long)cols);
+        printf("Index base: %s\n", (indexing == SPARSE_INDEX_BASE_ZERO) ? "0-based" : "1-based");
+
+        MKL_INT nnz = 0;
+        if (cols > 0) {
+            if (indexing == SPARSE_INDEX_BASE_ZERO)
+                nnz = col_end[cols - 1];
+            else
+                nnz = col_end[cols - 1] - 1;
+        }
+        printf("Nonzeros: %lld\n", (long long)nnz);
+
+        printf("Sample entries (col, row, val):\n");
+        MKL_INT printed = 0;
+
+        for (MKL_INT j = 0; j < cols && printed < 10; ++j) {
+            MKL_INT start = col_start[j];
+            MKL_INT end   = col_end[j];
+
+            if (indexing == SPARSE_INDEX_BASE_ONE) {
+                start--;
+                end--;
+            }
+
+            for (MKL_INT k = start; k < end && printed < 10; ++k) {
+                MKL_INT r = row_indx[k];
+                if (indexing == SPARSE_INDEX_BASE_ONE) r--;
+
+                printf("(%lld, %lld, %.3f)\n",
+                    (long long)j,
+                    (long long)r,
+                    values[k]);
+                printed++;
+            }
+        }
+    }
+
     printf("====================\n");
 }
 
@@ -374,6 +697,39 @@ void compare( const std::vector<double>& cpp_vec, const std::string& filename, c
     std::cout << label << " out of " << cpp_vec.size() << " elements " << counter_1 << " elements has more than 1 percent error" << std::endl;
     std::cout << label << " max_abs = " << max_abs << "  max_rel = " << max_rel
               << "  cpp: " << b_err << "  python: " << a_err << "\n\n";
+}
+
+void compare_dense( const std::vector<double>& vec1, const std::vector<double>& vec2, const std::string& label) {
+
+    double max_abs = 0.0;
+    double max_rel = 0.0;
+    double a_err = 0.0, b_err = 0.0;
+    int counter = 0;
+    int counter_1 = 0;
+    for (size_t i = 0; i < vec1.size(); ++i) {
+        double a = vec1[i];
+        double b = vec2[i];
+        // printf("a %e b %e \n", a, b);
+        double da = std::abs(a - b);
+
+        if (da > max_abs) {
+            max_abs = da;
+            a_err = a;
+            b_err = b;
+        }
+
+        double denom = std::max({std::abs(a), std::abs(b), 1e-12});
+        // if (da > (denom * 0.1)) std::cout << label << " more than 10 percent error-> cpp: " << b_err << "  python: " << a_err << "\n";
+        if (da > (denom * 0.1)) counter++;
+        if (da > (denom * 0.01)) counter_1++;
+        double rel = da / denom;
+        if (rel > max_rel) max_rel = rel;
+    
+    }
+    std::cout << label << " out of " << vec1.size() << " elements " << counter << " elements has more than 10 percent error" << std::endl;
+    std::cout << label << " out of " << vec1.size() << " elements " << counter_1 << " elements has more than 1 percent error" << std::endl;
+    std::cout << label << " max_abs = " << max_abs << "  max_rel = " << max_rel
+              << "  vec1: " << b_err << "  vec2: " << a_err << "\n\n";
 }
 
 void print_Cost_vals (const std::vector<double>& Cost) {
