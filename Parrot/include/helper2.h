@@ -1,3 +1,5 @@
+#pragma once
+
 #include <mkl.h>
 #include <cmath>
 #include <cinttypes>   

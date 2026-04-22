@@ -1,3 +1,5 @@
+#pragma once
+
 #ifdef MKL_AVAILABLE
 #include <mkl.h>
 #include <omp.h>

@@ -72,6 +72,7 @@ std::vector<double> l2_norm(std::vector<double> rwr, int n, int d) {
     return rwr;
 }
 
+#ifndef PARROT_CUDA_NATIVE_HELPERS
 void l2_norm_inplace(std::vector<double>& rwr, size_t n, size_t d) {
     std::vector<double> norms(n);
     #pragma omp parallel for
@@ -85,7 +86,9 @@ void l2_norm_inplace(std::vector<double>& rwr, size_t n, size_t d) {
             cblas_dscal((MKL_INT)d, norms[i], &rwr[i], (MKL_INT)n);
     }
 }
+#endif
 
+#ifndef PARROT_CUDA_NATIVE_HELPERS
 void get_normalized_neg_exp_dist (std::vector<double> rwr1, std::vector<double>  rwr2, int n1, int n2, int l, std::vector<double>& cross_rwr_dist) {
     // l2_norm_inplace(rwr1, n1, l);
     // l2_norm_inplace(rwr2, n2, l);
@@ -106,6 +109,7 @@ void get_normalized_neg_exp_dist (std::vector<double> rwr1, std::vector<double> 
     //     vdExp((MKL_INT)total, cross_rwr_dist.data(), cross_rwr_dist.data());
     // }
 }
+#endif
 
 void masked_sddmm_intra_cost (std::vector<double>&  emb, sparse_matrix_t mask, int n, int L, sparse_matrix_t& result) {
     // l2_norm_inplace(emb, n, L);
@@ -390,6 +394,7 @@ void get_batch_rwr_scores(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> a
     " spmm time " << spmm_time  <<  " add after spmm time " << add_after_spmm_time  <<  " swap after spmm time " << swap_after_spmm_time  << std::endl;
 }
 
+#ifndef PARROT_CUDA_NATIVE_HELPERS
 void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, 
                     std::vector<MKL_INT>>& anchors, double val) {
     const MKL_INT k = (MKL_INT)anchors.first.size();
@@ -406,6 +411,7 @@ void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, cons
         A[idx] = val;
     }
 }
+#endif
 
 // Then set H[row, col] = 1 for each anchor
 void init_H_with_anchors(std::vector<double>& H, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchors) {
