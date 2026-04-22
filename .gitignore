@@ -3,7 +3,7 @@ phone-email.mat
 Makefile_old
 Makefile_april20
 Parrot/parrot
-Parrot/parrot_cuda
+Parrot/cuda/parrot_cuda
 /Parrot/datasets/
 /experiments/
 /Parrot-Row/
