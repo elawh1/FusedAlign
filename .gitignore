@@ -12,3 +12,4 @@ Parrot/backup/
 benchmark/benchmark_mkl_spmm
 benchmark/spmm_benchmark_mtx
 benchmark/spmm_scratch
+*.o
