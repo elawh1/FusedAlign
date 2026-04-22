@@ -191,14 +191,9 @@ void masked_sddmm_intra_cost_cusparse(
         out_col_ind[k] = static_cast<MKL_INT>(h_col_ind[k]);
     }
 
-    // Destroy previous result if needed
-    if (result != nullptr) {
-        mkl_sparse_destroy(result);
-        result = nullptr;
-    }
-
+    sparse_matrix_t temp_result = nullptr;
     st = mkl_sparse_d_create_csr(
-        &result,
+        &temp_result,
         SPARSE_INDEX_BASE_ZERO,
         n,
         n,
@@ -210,6 +205,22 @@ void masked_sddmm_intra_cost_cusparse(
     if (st != SPARSE_STATUS_SUCCESS) {
         throw std::runtime_error("mkl_sparse_d_create_csr failed");
     }
+
+    matrix_descr descr{};
+    descr.type = SPARSE_MATRIX_TYPE_GENERAL;
+
+    sparse_matrix_t copied_result = nullptr;
+    st = mkl_sparse_copy(temp_result, descr, &copied_result);
+    mkl_sparse_destroy(temp_result);
+    if (st != SPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("mkl_sparse_copy failed");
+    }
+
+    if (result != nullptr) {
+        mkl_sparse_destroy(result);
+    }
+    result = copied_result;
+    mkl_sparse_optimize(result);
 
     // -------------------------------------------------------------------------
     // 6) Cleanup
