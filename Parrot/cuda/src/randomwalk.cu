@@ -291,18 +291,17 @@ void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> a
 }
 
 
-std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, sparse_matrix_t graph2_py, const std::vector<double>& in_cross_dist, 
-    int n1, int n2, int avg_nnz1_per_n1, int avg_nnz2_per_n2,
+std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_normalized, sparse_matrix_t graph2_normalized, const std::vector<double>& in_cross_dist, 
+    int n1, int n2,
     double rwr_restart_prob, double gamma, int max_iters, double tol) {
-    matrix_descr descr;
-    descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     auto time_0 = std::chrono::high_resolution_clock::now();
-    sparse_matrix_t graph1_normalized = row_normalize_graph( graph1_py, n1, avg_nnz1_per_n1);
-    sparse_matrix_t graph2_normalized = row_normalize_graph( graph2_py, n2, avg_nnz2_per_n2);
-    
+    const size_t N = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    if (in_cross_dist.size() != N) {
+        throw std::runtime_error("get_product_rwr_mat_cusparse size mismatch");
+    }
     auto time_1 = std::chrono::high_resolution_clock::now();
-    std::vector<double> out_cross_dist(n1 * n2, 0.0);
-    std::vector<double> out_cross_dist_old(n1 * n2, 0.0);
+    std::vector<double> out_cross_dist(N, 0.0);
+    std::vector<double> out_cross_dist_old(N, 0.0);
     std::vector<double> temp(n1 * n2);
     std::vector<double> CC(n1 * n2);
 
@@ -385,11 +384,11 @@ std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, spa
     CHECK_CUDA(cudaMalloc((void**)&d_colInd_g2, nnz_g2 * sizeof(int)));
     CHECK_CUDA(cudaMalloc((void**)&d_vals_g2, nnz_g2 * sizeof(double)));
 
-    CHECK_CUDA(cudaMalloc((void**)&d_out_cross_dist,     n1 * n2 * sizeof(double)));
-    CHECK_CUDA(cudaMalloc((void**)&d_out_cross_dist_old, n1 * n2 * sizeof(double)));
-    CHECK_CUDA(cudaMalloc((void**)&d_in_cross_dist,      n1 * n2 * sizeof(double)));
-    CHECK_CUDA(cudaMalloc((void**)&d_temp,               n1 * n2 * sizeof(double)));
-    CHECK_CUDA(cudaMalloc((void**)&d_CC,                 n1 * n2 * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_out_cross_dist,     N * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_out_cross_dist_old, N * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_in_cross_dist,      N * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_temp,               N * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_CC,                 N * sizeof(double)));
 
     // ------------------------------------------------------------
     // Copy data to GPU
@@ -402,10 +401,10 @@ std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, spa
     CHECK_CUDA(cudaMemcpy(d_colInd_g2, col_indx_g2, nnz_g2 * sizeof(int), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_vals_g2, values_g2, nnz_g2 * sizeof(double), cudaMemcpyHostToDevice));
 
-    CHECK_CUDA(cudaMemcpy(d_out_cross_dist, out_cross_dist.data(), n1 * n2 * sizeof(double), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_in_cross_dist,  in_cross_dist.data(),  n1 * n2 * sizeof(double), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemset(d_temp, 0, n1 * n2 * sizeof(double)));
-    CHECK_CUDA(cudaMemset(d_CC,   0, n1 * n2 * sizeof(double)));
+    CHECK_CUDA(cudaMemcpy(d_out_cross_dist, out_cross_dist.data(), N * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_in_cross_dist,  in_cross_dist.data(),  N * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemset(d_temp, 0, N * sizeof(double)));
+    CHECK_CUDA(cudaMemset(d_CC,   0, N * sizeof(double)));
 
     cusparseHandle_t sp_handle = nullptr;
     cublasHandle_t blas_handle = nullptr;
@@ -531,26 +530,11 @@ std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, spa
     for (int i = 0; i < max_iters; ++i) {
         auto time_2_0 = std::chrono::high_resolution_clock::now();
 
-        // out_cross_dist_old = out_cross_dist;
-        // mkl_domatcopy('C', 'T', n1, n2, 1.0, in_cross_dist.data(), n1, CC.data(), n2);
-        
-        // // 2 spmm correct working version
-        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
-        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
-        // mkl_domatcopy('C', 'T', n1, n2, 1.0, temp.data(), n1, out_cross_dist.data(), n2);
-        // double coeff = (1 - rwr_restart_prob) * gamma;
-        // auto time_2_0_1 = std::chrono::high_resolution_clock::now();
-        // st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n1, n2, (1+rwr_restart_prob), CC.data(), n2);
-        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
-        // auto time_2_0_2 = std::chrono::high_resolution_clock::now();
-        // mkl_domatcopy('C', 'T', n2, n1, 1.0, CC.data(), n2, out_cross_dist.data(), n1);
-        
-
         // out_cross_dist_old = out_cross_dist
         CHECK_CUDA(cudaMemcpy(
             d_out_cross_dist_old,
             d_out_cross_dist,
-            n1 * n2 * sizeof(double),
+            N * sizeof(double),
             cudaMemcpyDeviceToDevice));
 
         // CC = in_cross_dist^T
@@ -646,13 +630,13 @@ std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, spa
         CHECK_CUDA(cudaMemcpy(
             out_cross_dist.data(),
             d_out_cross_dist,
-            n1 * n2 * sizeof(double),
+            N * sizeof(double),
             cudaMemcpyDeviceToHost));
 
         CHECK_CUDA(cudaMemcpy(
             out_cross_dist_old.data(),
             d_out_cross_dist_old,
-            n1 * n2 * sizeof(double),
+            N * sizeof(double),
             cudaMemcpyDeviceToHost));
 
 
@@ -670,7 +654,7 @@ std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, spa
     cblas_dscal(n1 * n2, 1.0 - gamma, out_cross_dist.data(), 1);
     auto time_4 = std::chrono::high_resolution_clock::now();
 
-    std::cout << "in get_product_rwr_mat row normalize " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
+    std::cout << "in get_product_rwr_mat init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
     " init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
     " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << 
     " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() <<

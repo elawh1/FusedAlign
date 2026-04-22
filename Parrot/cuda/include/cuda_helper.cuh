@@ -76,11 +76,10 @@ void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> a
                                     float restart_prob, int max_iters, bool connect_isolated, 
                                     std::vector<double>& Xnext_vals);
 
-std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_py, 
-                                                    sparse_matrix_t graph2_py, 
+std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_normalized, 
+                                                    sparse_matrix_t graph2_normalized, 
                                                     const std::vector<double>& in_cross_dist, 
-                                                    int n1, int n2, int avg_nnz1_per_n1, 
-                                                    int avg_nnz2_per_n2, double rwr_restart_prob, 
+                                                    int n1, int n2, double rwr_restart_prob, 
                                                     double gamma, int max_iters = 50, 
                                                     double tol = 1e-2);
 

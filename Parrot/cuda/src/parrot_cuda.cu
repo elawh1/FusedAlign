@@ -130,13 +130,13 @@ int main(int argc, char* argv[]){
     std::cout << "cross_rwr_dist computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << " ms" << std::endl;
 
     auto time_7 = std::chrono::high_resolution_clock::now();
-    sparse_matrix_t intra_rwr1_masked_sddmm;
+    sparse_matrix_t intra_rwr1_masked_sddmm = nullptr;
     if (use_attr) masked_sddmm_intra_cost_cusparse(g1_feat, graph1_row_normalized, g1_num_nodes, (g1_feat.size()) / g1_num_nodes, intra_rwr1_masked_sddmm);
     else masked_sddmm_intra_cost_cusparse(g1_rwr, graph1_row_normalized, g1_num_nodes, l, intra_rwr1_masked_sddmm);
     auto time_8 = std::chrono::high_resolution_clock::now();
     std::cout << "g1 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_8-time_7).count() << " ms" << std::endl;
 
-    sparse_matrix_t intra_rwr2_masked_sddmm;
+    sparse_matrix_t intra_rwr2_masked_sddmm = nullptr;
     if (use_attr) masked_sddmm_intra_cost_cusparse(g2_feat, graph2_row_normalized, g2_num_nodes, (g2_feat.size()) / g2_num_nodes, intra_rwr2_masked_sddmm);
     else masked_sddmm_intra_cost_cusparse(g2_rwr, graph2_row_normalized, g2_num_nodes, l, intra_rwr2_masked_sddmm);
     auto time_9 = std::chrono::high_resolution_clock::now();
@@ -150,8 +150,7 @@ int main(int argc, char* argv[]){
 
     //Compute cross_dist
     auto time_10 = std::chrono::high_resolution_clock::now();
-    std::vector<double> cross_dist((size_t) g1_num_nodes * (size_t) g2_num_nodes);
-    get_product_rwr_mat_new(graph1_row_normalized, graph2_row_normalized, cross_rwr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75, cross_dist); 
+    std::vector<double> cross_dist = get_product_rwr_mat_cusparse(graph1_row_normalized, graph2_row_normalized, cross_rwr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75); 
     cross_rwr_dist.clear(); cross_rwr_dist.shrink_to_fit();
     auto time_11 = std::chrono::high_resolution_clock::now();
     std::cout << "cross_dist computation completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_11-time_10).count()   << " ms" << std::endl;
@@ -172,4 +171,3 @@ int main(int argc, char* argv[]){
 
     return 0;
 }
-
