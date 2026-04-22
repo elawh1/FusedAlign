@@ -58,6 +58,30 @@ __global__ void anchor_cost_zero_kernel(double* matrix, MKL_INT nrows, const MKL
     }
 }
 
+__global__ void csr_row_sum_kernel(const int* row_offsets, const double* values, int rows, double* row_sums) {
+    const int row = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (row >= rows) return;
+
+    double sum = 0.0;
+    for (int idx = row_offsets[row]; idx < row_offsets[row + 1]; ++idx) {
+        sum += values[idx];
+    }
+    row_sums[row] = sum;
+}
+
+__global__ void csr_scale_rows_kernel(const int* row_offsets, double* values, const double* row_sums, int rows) {
+    const int row = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (row >= rows) return;
+
+    const double row_sum = row_sums[row];
+    if (row_sum <= 1e-10) return;
+
+    const double inv = 1.0 / row_sum;
+    for (int idx = row_offsets[row]; idx < row_offsets[row + 1]; ++idx) {
+        values[idx] *= inv;
+    }
+}
+
 struct CublasHandle {
     cublasHandle_t handle = nullptr;
     CublasHandle() {
@@ -193,6 +217,204 @@ void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, cons
     CHECK_CUDA(cudaFree(d_cols));
     CHECK_CUDA(cudaFree(d_rows));
     CHECK_CUDA(cudaFree(d_matrix));
+}
+
+sparse_matrix_t row_normalize_graph(sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
+    std::vector<double> all_ones(n, 1.0);
+    std::vector<double> graph_row_sum(n, 0.0);
+    matrix_descr descr{};
+    descr.type = SPARSE_MATRIX_TYPE_GENERAL;
+
+    sparse_status_t status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE,
+                                             1.0,
+                                             graph,
+                                             descr,
+                                             all_ones.data(),
+                                             0.0,
+                                             graph_row_sum.data());
+    if (status != SPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("mkl_sparse_d_mv failed in row_normalize_graph");
+    }
+
+    std::vector<MKL_INT> isolated;
+    for (MKL_INT i = 0; i < n; ++i) {
+        if (graph_row_sum[i] < 1e-10) {
+            isolated.push_back(i);
+        }
+    }
+    printf("ang nnz %d num of isolated %ld\n", avg_nnz_per_n, isolated.size());
+
+    sparse_matrix_t graph_connected = nullptr;
+    bool owns_graph_connected = false;
+    if (!isolated.empty()) {
+        printf("connecting isolated nodes\n");
+        std::vector<double> edge_list;
+        edge_list.reserve(isolated.size() * avg_nnz_per_n * 4);
+        std::srand(std::time(0));
+        for (MKL_INT i : isolated) {
+            std::set<MKL_INT> random_nodes = {};
+            while (random_nodes.size() < static_cast<size_t>(avg_nnz_per_n)) {
+                MKL_INT random_num = std::rand() % n;
+                if (random_num == i || random_nodes.find(random_num) != random_nodes.end()) continue;
+                random_nodes.insert(random_num);
+                edge_list.push_back(static_cast<double>(i));
+                edge_list.push_back(static_cast<double>(random_num));
+                edge_list.push_back(static_cast<double>(random_num));
+                edge_list.push_back(static_cast<double>(i));
+            }
+        }
+
+        printf("edge_list size %d \n", static_cast<int>(edge_list.size()));
+        sparse_matrix_t add_mat = make_mat_from_edgelist(edge_list, n, n);
+        status = mkl_sparse_d_add(SPARSE_OPERATION_NON_TRANSPOSE, graph, 1.0, add_mat, &graph_connected);
+        mkl_sparse_destroy(add_mat);
+        if (status != SPARSE_STATUS_SUCCESS) {
+            throw std::runtime_error("mkl_sparse_d_add failed in row_normalize_graph");
+        }
+        owns_graph_connected = true;
+    } else {
+        graph_connected = graph;
+    }
+
+    sparse_matrix_t graph_connected_csr = nullptr;
+    status = mkl_sparse_convert_csr(graph_connected, SPARSE_OPERATION_NON_TRANSPOSE, &graph_connected_csr);
+    if (status != SPARSE_STATUS_SUCCESS) {
+        if (owns_graph_connected) mkl_sparse_destroy(graph_connected);
+        throw std::runtime_error("mkl_sparse_convert_csr failed in row_normalize_graph");
+    }
+
+    sparse_index_base_t indexing = SPARSE_INDEX_BASE_ZERO;
+    MKL_INT rows = 0, cols = 0;
+    MKL_INT* row_start = nullptr;
+    MKL_INT* row_end = nullptr;
+    MKL_INT* col_indx = nullptr;
+    double* values = nullptr;
+    status = mkl_sparse_d_export_csr(graph_connected_csr,
+                                     &indexing,
+                                     &rows,
+                                     &cols,
+                                     &row_start,
+                                     &row_end,
+                                     &col_indx,
+                                     &values);
+    if (status != SPARSE_STATUS_SUCCESS) {
+        mkl_sparse_destroy(graph_connected_csr);
+        if (owns_graph_connected) mkl_sparse_destroy(graph_connected);
+        throw std::runtime_error("mkl_sparse_d_export_csr failed in row_normalize_graph");
+    }
+
+    std::vector<int> h_row_offsets(rows + 1);
+    for (int i = 0; i < rows; ++i) {
+        h_row_offsets[i] = static_cast<int>(row_start[i]);
+    }
+    h_row_offsets[rows] = static_cast<int>(row_end[rows - 1]);
+    const int base = (indexing == SPARSE_INDEX_BASE_ZERO) ? 0 : 1;
+    if (base == 1) {
+        for (int i = 0; i <= rows; ++i) h_row_offsets[i]--;
+    }
+
+    const int nnz = h_row_offsets[rows];
+    std::vector<int> h_col_ind(nnz);
+    std::vector<double> h_vals(nnz);
+    for (int i = 0; i < nnz; ++i) {
+        h_col_ind[i] = static_cast<int>(col_indx[i]) - base;
+        h_vals[i] = values[i];
+    }
+
+    int* d_row_offsets = nullptr;
+    double* d_vals = nullptr;
+    double* d_row_sums = nullptr;
+    CHECK_CUDA(cudaMalloc(&d_row_offsets, (rows + 1) * sizeof(int)));
+    CHECK_CUDA(cudaMalloc(&d_vals, nnz * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_row_sums, rows * sizeof(double)));
+    CHECK_CUDA(cudaMemcpy(d_row_offsets, h_row_offsets.data(), (rows + 1) * sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_vals, h_vals.data(), nnz * sizeof(double), cudaMemcpyHostToDevice));
+
+    const unsigned int blocks = static_cast<unsigned int>((rows + kBlockSize - 1) / kBlockSize);
+    csr_row_sum_kernel<<<blocks, kBlockSize>>>(d_row_offsets, d_vals, rows, d_row_sums);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaMemcpy(graph_row_sum.data(), d_row_sums, rows * sizeof(double), cudaMemcpyDeviceToHost));
+    for (int i = 0; i < static_cast<int>(graph_row_sum.size()); ++i) {
+        if (graph_row_sum[i] < 1e-10) printf("111 graph_row_sum[%d] is zero \n", i);
+    }
+
+    csr_scale_rows_kernel<<<blocks, kBlockSize>>>(d_row_offsets, d_vals, d_row_sums, rows);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaMemcpy(h_vals.data(), d_vals, nnz * sizeof(double), cudaMemcpyDeviceToHost));
+    csr_row_sum_kernel<<<blocks, kBlockSize>>>(d_row_offsets, d_vals, rows, d_row_sums);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaMemcpy(graph_row_sum.data(), d_row_sums, rows * sizeof(double), cudaMemcpyDeviceToHost));
+    for (int i = 0; i < static_cast<int>(graph_row_sum.size()); ++i) {
+        if (graph_row_sum[i] < 1e-10) printf("222 graph_row_sum[%d] is zero \n", i);
+    }
+
+    std::vector<MKL_INT> out_row_start(rows), out_row_end(rows), out_col_ind(nnz);
+    for (int i = 0; i < rows; ++i) {
+        out_row_start[i] = static_cast<MKL_INT>(h_row_offsets[i]);
+        out_row_end[i] = static_cast<MKL_INT>(h_row_offsets[i + 1]);
+    }
+    for (int i = 0; i < nnz; ++i) {
+        out_col_ind[i] = static_cast<MKL_INT>(h_col_ind[i]);
+    }
+
+    sparse_matrix_t temp_result = nullptr;
+    status = mkl_sparse_d_create_csr(&temp_result,
+                                     SPARSE_INDEX_BASE_ZERO,
+                                     rows,
+                                     cols,
+                                     out_row_start.data(),
+                                     out_row_end.data(),
+                                     out_col_ind.data(),
+                                     h_vals.data());
+    if (status != SPARSE_STATUS_SUCCESS) {
+        CHECK_CUDA(cudaFree(d_row_sums));
+        CHECK_CUDA(cudaFree(d_vals));
+        CHECK_CUDA(cudaFree(d_row_offsets));
+        mkl_sparse_destroy(graph_connected_csr);
+        if (owns_graph_connected) mkl_sparse_destroy(graph_connected);
+        throw std::runtime_error("mkl_sparse_d_create_csr failed in row_normalize_graph");
+    }
+
+    sparse_matrix_t graph_norm_csr = nullptr;
+    status = mkl_sparse_copy(temp_result, descr, &graph_norm_csr);
+    mkl_sparse_destroy(temp_result);
+    if (status != SPARSE_STATUS_SUCCESS) {
+        CHECK_CUDA(cudaFree(d_row_sums));
+        CHECK_CUDA(cudaFree(d_vals));
+        CHECK_CUDA(cudaFree(d_row_offsets));
+        mkl_sparse_destroy(graph_connected_csr);
+        if (owns_graph_connected) mkl_sparse_destroy(graph_connected);
+        throw std::runtime_error("mkl_sparse_copy failed in row_normalize_graph");
+    }
+    status = mkl_sparse_optimize(graph_norm_csr);
+    if (status != SPARSE_STATUS_SUCCESS) {
+        CHECK_CUDA(cudaFree(d_row_sums));
+        CHECK_CUDA(cudaFree(d_vals));
+        CHECK_CUDA(cudaFree(d_row_offsets));
+        mkl_sparse_destroy(graph_norm_csr);
+        mkl_sparse_destroy(graph_connected_csr);
+        if (owns_graph_connected) mkl_sparse_destroy(graph_connected);
+        throw std::runtime_error("mkl_sparse_optimize failed in row_normalize_graph");
+    }
+
+    CHECK_CUDA(cudaFree(d_row_sums));
+    CHECK_CUDA(cudaFree(d_vals));
+    CHECK_CUDA(cudaFree(d_row_offsets));
+    mkl_sparse_destroy(graph_connected_csr);
+    if (owns_graph_connected) {
+        mkl_sparse_destroy(graph_connected);
+    }
+
+    status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph_norm_csr, descr, all_ones.data(), 0.0, graph_row_sum.data());
+    if (status != SPARSE_STATUS_SUCCESS) {
+        mkl_sparse_destroy(graph_norm_csr);
+        throw std::runtime_error("mkl_sparse_d_mv failed after normalization");
+    }
+    for (int i = 0; i < static_cast<int>(graph_row_sum.size()); ++i) {
+        if (graph_row_sum[i] < 1e-10) printf("333 graph_row_sum[%d] is zero \n", i);
+    }
+
+    return graph_norm_csr;
 }
 
 #define PARROT_CUDA_NATIVE_HELPERS

@@ -175,6 +175,7 @@ std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vect
     return {anchor_g1, anchor_g2};
 }
 
+#ifndef PARROT_CUDA_NATIVE_HELPERS
 sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
 
     std::vector<double> all_ones(n, (double) 1.0);
@@ -268,6 +269,7 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
 
     return graph_norm_csr;
 }
+#endif
 
 sparse_matrix_t row_normalize_graph_new( sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
     
