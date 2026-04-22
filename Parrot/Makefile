@@ -1,11 +1,11 @@
 CXX ?= g++
-CXXFLAGS = -O3 -std=c++17 -Wall
+CXXFLAGS = -O3 -std=c++17 -Wall -Iinclude 
 
 TARGET = parrot
-SRC = parrot.cpp
-HDR = helper.h helper2.h fused_spmm.h accuracy.h
+SRC = src/parrot.cpp 
+HDR = include/helper.h include/helper2.h include/fused_spmm.h include/accuracy.h
 
-CPP_SRCS = helper.cpp helper2.cpp fused_spmm.cpp
+CPP_SRCS = src/helper.cpp src/helper2.cpp src/fused_spmm.cpp src/accuracy.cpp
 CPP_OBJS = $(CPP_SRCS:.cpp=.o)
 
 NVCC ?= nvcc
@@ -37,8 +37,8 @@ NVLIBS = -L/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/math_libs/12.9/targets/x86_64-l
 
 all: $(TARGET) $(CUDA_TARGET)
 
-$(TARGET): $(SRC) $(CPP_OBJS) $(HDR)
-	$(CXX) $(CXXFLAGS) $(SRC) $(CPP_OBJS) -o $(TARGET) $(LIBS)
+$(TARGET): $(SRC) $(HDR)
+	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LIBS)
 
 $(CUDA_TARGET): $(CUDA_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCCFLAGS) $(CUDA_OBJS) $(CPP_OBJS) -o $(CUDA_TARGET) $(LIBS) $(NVLIBS)

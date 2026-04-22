@@ -13,6 +13,7 @@
 #include <chrono>
 #include "accuracy.h"
 #include "helper.h"
+#include "helper2.h"
 
 int main(int argc, char* argv[]){ 
 

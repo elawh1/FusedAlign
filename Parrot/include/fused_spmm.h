@@ -42,5 +42,3 @@ std::vector<double> blockwise_colsum_matmul_2( sparse_matrix_t A, sparse_matrix_
 
 std::vector<double> blockwise_outputcols_matmul( sparse_matrix_t A,  sparse_matrix_t C,  const std::vector<double>& B, 
     size_t n1, size_t n2, int n_blocks, double scalar) ;
-
-
