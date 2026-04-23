@@ -2,102 +2,6 @@
 #include "helper.h"
 
 void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> anchors, MKL_INT n, MKL_INT avg_nnz_per_n, bool directed, float restart_prob, int max_iters, bool connect_isolated, std::vector<double>& Xnext_vals) {
-    
-    matrix_descr descr;
-    descr.type = SPARSE_MATRIX_TYPE_GENERAL;
-
-    // int n_int = (int) n;
-    // int nnz = graph_edgelist.size() / 2;
-    // printf("%d %d\n", n_int, nnz);
-    // std::vector<int> h_row(nnz), h_col(nnz);
-    // for(int i=0; i < nnz; i++) {
-    //     h_row[i] = graph_edgelist[2*i];
-    //     h_col[i] = graph_edgelist[2*i+1];	
-    // }
-    // std::vector<double> h_val(nnz, (double) 1.0);
-
-    // int *d_row = nullptr, *d_col = nullptr;
-    // double *d_val = nullptr, *d_x = nullptr, *d_y = nullptr;
-
-    // CHECK_CUDA(cudaMalloc((void**)&d_row, nnz * sizeof(int)));
-    // CHECK_CUDA(cudaMalloc((void**)&d_col, nnz * sizeof(int)));
-    // CHECK_CUDA(cudaMalloc((void**)&d_val, nnz * sizeof(double)));
-    // CHECK_CUDA(cudaMalloc((void**)&d_x, n_int * sizeof(double)));
-    // CHECK_CUDA(cudaMalloc((void**)&d_y, n_int * sizeof(double)));
-
-    // CHECK_CUDA(cudaMemcpy(d_row, h_row.data(), nnz * sizeof(int), cudaMemcpyHostToDevice));
-    // CHECK_CUDA(cudaMemcpy(d_col, h_col.data(), nnz * sizeof(int), cudaMemcpyHostToDevice));
-    // CHECK_CUDA(cudaMemcpy(d_val, h_val.data(), nnz * sizeof(double), cudaMemcpyHostToDevice));
-    // CHECK_CUDA(cudaMemcpy(d_x,   all_ones.data(),   n_int * sizeof(double), cudaMemcpyHostToDevice));
-    // CHECK_CUDA(cudaMemcpy(d_y,   graph_row_sum.data(),   n_int * sizeof(double), cudaMemcpyHostToDevice));
-
-    // cusparseHandle_t handle;
-    // CHECK_CUSPARSE(cusparseCreate(&handle));
-
-    // cusparseSpMatDescr_t matA;
-    // cusparseDnVecDescr_t vecX, vecY;
-
-    // CHECK_CUSPARSE(cusparseCreateCoo(
-    //     &matA,
-    //     n_int,
-    //     n_int,
-    //     nnz,
-    //     d_row,
-    //     d_col,
-    //     d_val,
-    //     CUSPARSE_INDEX_32I,
-    //     CUSPARSE_INDEX_BASE_ZERO,
-    //     CUDA_R_64F));
-
-    // CHECK_CUSPARSE(cusparseCreateDnVec(&vecX, n_int, d_x, CUDA_R_64F));
-    // CHECK_CUSPARSE(cusparseCreateDnVec(&vecY, n_int, d_y, CUDA_R_64F));
-
-    // double alpha = 1.0f;
-    // double beta  = 1.0f;
-
-    // size_t bufferSize = 0;
-    // CHECK_CUSPARSE(cusparseSpMV_bufferSize(
-    //     handle,
-    //     CUSPARSE_OPERATION_NON_TRANSPOSE,
-    //     &alpha,
-    //     matA,
-    //     vecX,
-    //     &beta,
-    //     vecY,
-    //     CUDA_R_64F,
-    //     CUSPARSE_SPMV_ALG_DEFAULT,
-    //     &bufferSize));
-
-    // void* dBuffer = nullptr;
-    // CHECK_CUDA(cudaMalloc(&dBuffer, bufferSize));
-
-    // CHECK_CUSPARSE(cusparseSpMV(
-    //     handle,
-    //     CUSPARSE_OPERATION_NON_TRANSPOSE,
-    //     &alpha,
-    //     matA,
-    //     vecX,
-    //     &beta,
-    //     vecY,
-    //     CUDA_R_64F,
-    //     CUSPARSE_SPMV_ALG_DEFAULT,
-    //     dBuffer));
-
-    // CHECK_CUDA(cudaMemcpy(graph_row_sum.data(), d_y, n_int * sizeof(double), cudaMemcpyDeviceToHost));
-
-    // cusparseDestroySpMat(matA);
-    // cusparseDestroyDnVec(vecX);
-    // cusparseDestroyDnVec(vecY);
-    // cusparseDestroy(handle);
-
-    // cudaFree(dBuffer);
-    // cudaFree(d_row);
-    // cudaFree(d_col);
-    // cudaFree(d_val);
-    // cudaFree(d_x);
-    // cudaFree(d_y);
-    // return graph_row_sum;
-
     MKL_INT rows, cols;
     MKL_INT *row_start, *row_end, *col_indx;
     double *values;
@@ -113,35 +17,32 @@ void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> a
         &col_indx,
         &values);
 
+    if (rows != n || cols != n) {
+        throw std::runtime_error("get_batch_rwr_scores_cusparse graph dimension mismatch");
+    }
+
     std::vector<int> h_rowPtr(rows + 1);
+    const int base = (indexing == SPARSE_INDEX_BASE_ZERO) ? 0 : 1;
 
     for (int i = 0; i < rows; i++) {
-        h_rowPtr[i] = row_start[i];
+        h_rowPtr[i] = static_cast<int>(row_start[i]) - base;
     }
-    h_rowPtr[rows] = row_end[rows - 1];
+    h_rowPtr[rows] = static_cast<int>(row_end[rows - 1]) - base;
 
-    // If MKL indexing is one-based, convert to zero-based for cuSPARSE
-    if (indexing == SPARSE_INDEX_BASE_ONE) {
-        for (int i = 0; i <= rows; i++) h_rowPtr[i]--;
-        for (int i = 0; i < row_end[rows - 1]; i++) col_indx[i]--;
+    const int nnz = h_rowPtr[rows];
+    std::vector<int> h_colInd(nnz);
+    for (int i = 0; i < nnz; ++i) {
+        h_colInd[i] = static_cast<int>(col_indx[i]) - base;
     }
-    int nnz = h_rowPtr[rows];
 
     auto time_0 = std::chrono::high_resolution_clock::now();
-    int l = anchors.size();
-    //one hot encoding E matrix
-    std::vector<double> E(n * l, 0.0);
+    const int l = static_cast<int>(anchors.size());
+    std::vector<double> E(static_cast<size_t>(n) * static_cast<size_t>(l), 0.0);
     for (int j = 0; j < l; ++j) {
-        E[ anchors[j] + j * n ] = 1.0;   // one-hot at (row=anchor[j], col=j)
+        E[ anchors[j] + j * n ] = restart_prob;   // one-hot at (row=anchor[j], col=j)
     }
-    //these are column major
-    // std::vector<double> X_vals(n*l, 1.0);      // X(t), all ones
-    std::vector<double> X_vals = E;
-    Xnext_vals.assign(n*l, 0.0);
+    Xnext_vals.assign(static_cast<size_t>(n) * static_cast<size_t>(l), 0.0);
 
-    // ------------------------------------------------------------
-    // Allocate GPU memory
-    // ------------------------------------------------------------
     int *d_rowPtr = nullptr, *d_colInd = nullptr;
     double *d_vals = nullptr, *d_X = nullptr, *d_Xnext = nullptr, *d_E = nullptr;
 
@@ -149,20 +50,17 @@ void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> a
     CHECK_CUDA(cudaMalloc((void**)&d_colInd, nnz * sizeof(int)));
     CHECK_CUDA(cudaMalloc((void**)&d_vals, nnz * sizeof(double)));
 
-    CHECK_CUDA(cudaMalloc((void**)&d_X, n * l * sizeof(double)));
-    CHECK_CUDA(cudaMalloc((void**)&d_Xnext, n * l * sizeof(double)));
-    CHECK_CUDA(cudaMalloc((void**)&d_E, n * l * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_X, static_cast<size_t>(n) * static_cast<size_t>(l) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_Xnext, static_cast<size_t>(n) * static_cast<size_t>(l) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc((void**)&d_E, static_cast<size_t>(n) * static_cast<size_t>(l) * sizeof(double)));
 
-    // ------------------------------------------------------------
-    // Copy data to GPU
-    // ------------------------------------------------------------
     CHECK_CUDA(cudaMemcpy(d_rowPtr, h_rowPtr.data(), (rows + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_colInd, col_indx, nnz * sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_colInd, h_colInd.data(), nnz * sizeof(int), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_vals, values, nnz * sizeof(double), cudaMemcpyHostToDevice));
 
-    CHECK_CUDA(cudaMemcpy(d_X, E.data(), n * l * sizeof(double), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_Xnext, Xnext_vals.data(), n * l * sizeof(double), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_E, E.data(), n * l * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_X, E.data(), static_cast<size_t>(n) * static_cast<size_t>(l) * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemset(d_Xnext, 0, static_cast<size_t>(n) * static_cast<size_t>(l) * sizeof(double)));
+    CHECK_CUDA(cudaMemcpy(d_E, E.data(), static_cast<size_t>(n) * static_cast<size_t>(l) * sizeof(double), cudaMemcpyHostToDevice));
 
     cusparseHandle_t cusparseH;
     cublasHandle_t cublasH;
@@ -198,8 +96,8 @@ void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> a
         CUDA_R_64F,
         CUSPARSE_ORDER_COL));
     
-    double alpha = (double)(1 - restart_prob);
-    double beta = 1.0;
+    const double alpha = static_cast<double>(1.0 - restart_prob);
+    const double beta = 1.0;
 
     size_t bufferSize = 0;
     void* dBuffer = nullptr;
@@ -218,6 +116,18 @@ void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> a
         &bufferSize));
 
     CHECK_CUDA(cudaMalloc(&dBuffer, bufferSize));
+    CHECK_CUSPARSE(cusparseSpMM_preprocess(
+        cusparseH,
+        CUSPARSE_OPERATION_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha,
+        matA,
+        matX,
+        &beta,
+        matXnext,
+        CUDA_R_64F,
+        CUSPARSE_SPMM_ALG_DEFAULT,
+        dBuffer));
 
     auto time_1 = std::chrono::high_resolution_clock::now();
     auto add_after_spmm_time = 0, spmm_time=0, swap_after_spmm_time=0;
@@ -269,10 +179,8 @@ void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> a
 
 
     Xnext_vals.assign(n * l, 0.0);
-    CHECK_CUDA(cudaMemcpy(Xnext_vals.data(), d_X, n * l * sizeof(double), cudaMemcpyDeviceToHost));
-        // ------------------------------------------------------------
-    // Cleanup
-    // ------------------------------------------------------------
+    CHECK_CUDA(cudaMemcpy(Xnext_vals.data(), d_X, static_cast<size_t>(n) * static_cast<size_t>(l) * sizeof(double), cudaMemcpyDeviceToHost));
+
     CHECK_CUDA(cudaFree(dBuffer));
 
     CHECK_CUSPARSE(cusparseDestroyDnMat(matX));
