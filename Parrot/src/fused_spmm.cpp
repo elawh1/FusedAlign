@@ -34,7 +34,7 @@
 // For each block of columns in n2, generate E_col (n1 x 1) and D_col (n1 x 1)
 std::vector<double> blockwise_colsum_matmul( sparse_matrix_t A, sparse_matrix_t C, const std::vector<double>& B, size_t n1, size_t n2, int n_blocks, double scalar) {
     int numThreads = mkl_get_max_threads();
-    printf("in blockwise_colsum_matmul nthreads %d\n", numThreads);
+    DEBUG_ONLY(printf("in blockwise_colsum_matmul nthreads %d\n", numThreads));
     std::vector<double> D( (size_t) n1*n2, 0.0);
     // Extract CSR views for A and C
     sparse_index_base_t A_indexing;
@@ -254,7 +254,7 @@ std::vector<double> blockwise_outputcols_matmul( sparse_matrix_t A,  sparse_matr
     size_t n1, size_t n2, int n_blocks, double scalar) {
 
     int numThreads = mkl_get_max_threads();
-    printf("in blockwise_outputcols_matmul nthreads %d\n", numThreads);
+    DEBUG_ONLY(printf("in blockwise_outputcols_matmul nthreads %d\n", numThreads));
     if (B.size() != n1 * n2) throw std::runtime_error("B size mismatch");
     if (n_blocks <= 0)  throw std::runtime_error("n_blocks must be positive");
 
@@ -350,5 +350,4 @@ std::vector<double> blockwise_outputcols_matmul( sparse_matrix_t A,  sparse_matr
     // printf("D_block_idx worked\n");
     return D;
 }
-
 
