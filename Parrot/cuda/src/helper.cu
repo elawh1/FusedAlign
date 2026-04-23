@@ -253,6 +253,126 @@ __global__ void update_s_kernel(double* s,
     }
 }
 
+__global__ void minaa_v3_dense_kernel(const double* cost,
+                                      const double* b,
+                                      int n_row,
+                                      int n_col,
+                                      double epsilon,
+                                      double* out_vec) {
+    const int col_idx = static_cast<int>(blockIdx.x);
+    if (col_idx >= n_col) return;
+
+    const double* col = cost + static_cast<size_t>(col_idx) * static_cast<size_t>(n_row);
+
+    double local_min = INFINITY;
+    for (int row = threadIdx.x; row < n_row; row += blockDim.x) {
+        local_min = fmin(local_min, col[row] - b[row]);
+    }
+
+    __shared__ double shared_min[kBlockSize];
+    shared_min[threadIdx.x] = local_min;
+    __syncthreads();
+
+    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            shared_min[threadIdx.x] = fmin(shared_min[threadIdx.x], shared_min[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+
+    const double min_value = shared_min[0];
+
+    double local_sum = 0.0;
+    for (int row = threadIdx.x; row < n_row; row += blockDim.x) {
+        local_sum += exp(-((col[row] - b[row] - min_value) / epsilon));
+    }
+
+    __shared__ double shared_sum[kBlockSize];
+    shared_sum[threadIdx.x] = local_sum;
+    __syncthreads();
+
+    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            shared_sum[threadIdx.x] += shared_sum[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        out_vec[col_idx] = min_value - epsilon * log(shared_sum[0] / static_cast<double>(n_row));
+    }
+}
+
+void transpose_col_major_matrix(const double* d_in,
+                                int rows,
+                                int cols,
+                                double* d_out,
+                                cublasHandle_t handle) {
+    const double alpha = 1.0;
+    const double beta = 0.0;
+    CHECK_CUBLAS(cublasDgeam(handle,
+                             CUBLAS_OP_T,
+                             CUBLAS_OP_N,
+                             cols,
+                             rows,
+                             &alpha,
+                             d_in,
+                             rows,
+                             &beta,
+                             d_in,
+                             cols,
+                             d_out,
+                             cols));
+}
+
+void run_sinkhorn_iterations_cuda(const std::vector<double>& cost,
+                                  int n1,
+                                  int n2,
+                                  int inner_iters,
+                                  double epsilon,
+                                  std::vector<double>& a_row,
+                                  std::vector<double>& b_col) {
+    const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    if (cost.size() != matrix_size || a_row.size() != static_cast<size_t>(n2) || b_col.size() != static_cast<size_t>(n1)) {
+        throw std::runtime_error("run_sinkhorn_iterations_cuda size mismatch");
+    }
+    if (inner_iters <= 0 || matrix_size == 0) {
+        return;
+    }
+
+    double* d_cost = nullptr;
+    double* d_cost_t = nullptr;
+    double* d_a_row = nullptr;
+    double* d_b_col = nullptr;
+
+    CHECK_CUDA(cudaMalloc(&d_cost, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_cost_t, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_a_row, static_cast<size_t>(n2) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_b_col, static_cast<size_t>(n1) * sizeof(double)));
+
+    CHECK_CUDA(cudaMemcpy(d_cost, cost.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_b_col, b_col.data(), static_cast<size_t>(n1) * sizeof(double), cudaMemcpyHostToDevice));
+
+    CublasHandle blas_handle;
+    transpose_col_major_matrix(d_cost, n1, n2, d_cost_t, blas_handle.handle);
+
+    for (int iter = 0; iter < inner_iters; ++iter) {
+        minaa_v3_dense_kernel<<<static_cast<unsigned int>(n2), kBlockSize>>>(d_cost, d_b_col, n1, n2, epsilon, d_a_row);
+        CHECK_CUDA(cudaGetLastError());
+
+        minaa_v3_dense_kernel<<<static_cast<unsigned int>(n1), kBlockSize>>>(d_cost_t, d_a_row, n2, n1, epsilon, d_b_col);
+        CHECK_CUDA(cudaGetLastError());
+    }
+
+    CHECK_CUDA(cudaMemcpy(a_row.data(), d_a_row, static_cast<size_t>(n2) * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(b_col.data(), d_b_col, static_cast<size_t>(n1) * sizeof(double), cudaMemcpyDeviceToHost));
+
+    CHECK_CUDA(cudaFree(d_b_col));
+    CHECK_CUDA(cudaFree(d_a_row));
+    CHECK_CUDA(cudaFree(d_cost_t));
+    CHECK_CUDA(cudaFree(d_cost));
+}
+
 } // namespace
 
 void l2_norm_inplace(std::vector<double>& rwr, size_t n, size_t d) {
@@ -674,6 +794,42 @@ double update_S_mat(std::vector<double>& S,
     return std::accumulate(h_block_sums.begin(), h_block_sums.end(), 0.0);
 }
 
+void minaa_v3_dense(std::vector<double>& Cost,
+                    const std::vector<double>& b,
+                    int n_row,
+                    int n_col,
+                    double epsilon,
+                    std::vector<double>& out_vec) {
+    if (Cost.size() != static_cast<size_t>(n_row) * static_cast<size_t>(n_col) ||
+        b.size() != static_cast<size_t>(n_row) ||
+        out_vec.size() != static_cast<size_t>(n_col)) {
+        throw std::runtime_error("minaa_v3_dense size mismatch");
+    }
+    if (Cost.empty()) {
+        return;
+    }
+
+    double* d_cost = nullptr;
+    double* d_b = nullptr;
+    double* d_out = nullptr;
+
+    CHECK_CUDA(cudaMalloc(&d_cost, Cost.size() * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_b, b.size() * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_out, out_vec.size() * sizeof(double)));
+
+    CHECK_CUDA(cudaMemcpy(d_cost, Cost.data(), Cost.size() * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_b, b.data(), b.size() * sizeof(double), cudaMemcpyHostToDevice));
+
+    minaa_v3_dense_kernel<<<static_cast<unsigned int>(n_col), kBlockSize>>>(d_cost, d_b, n_row, n_col, epsilon, d_out);
+    CHECK_CUDA(cudaGetLastError());
+
+    CHECK_CUDA(cudaMemcpy(out_vec.data(), d_out, out_vec.size() * sizeof(double), cudaMemcpyDeviceToHost));
+
+    CHECK_CUDA(cudaFree(d_out));
+    CHECK_CUDA(cudaFree(d_b));
+    CHECK_CUDA(cudaFree(d_cost));
+}
+
 sparse_matrix_t row_normalize_graph(sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
     std::vector<double> all_ones(n, 1.0);
     std::vector<double> graph_row_sum(n, 0.0);
@@ -872,6 +1028,8 @@ sparse_matrix_t row_normalize_graph(sparse_matrix_t graph, int n, MKL_INT avg_nn
     return graph_norm_csr;
 }
 
+#define PARROT_CUDA_NATIVE_SINKHORN_INNER_LOOP
+#define PARROT_CUDA_NATIVE_MINAA_V3_DENSE
 #define PARROT_CUDA_NATIVE_UPDATE_S_MAT
 #define PARROT_CUDA_NATIVE_COMPUTE_COST_FUSED_2
 #define PARROT_CUDA_NATIVE_HELPERS

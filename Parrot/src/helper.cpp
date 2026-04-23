@@ -795,6 +795,7 @@ void get_product_rwr_mat_new( sparse_matrix_t graph1_normalized, sparse_matrix_t
 //     dscal_chunked(N, 1.0 - gamma, out_cross_dist.data());
 // }
 
+#ifndef PARROT_CUDA_NATIVE_MINAA_V3_DENSE
 void minaa_v3_dense( std::vector<double>& Cost, const std::vector<double>& b, int n_row, int n_col, double epsilon, std::vector<double>& out_vec ) {
     unsigned int numThreads = mkl_get_max_threads();
     mkl_set_num_threads(1);
@@ -818,6 +819,7 @@ void minaa_v3_dense( std::vector<double>& Cost, const std::vector<double>& b, in
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
 }
+#endif
 
 void euclidean_distance_mat_vec( const std::vector<double>& X, const std::vector<double>& y, int n, int d, std::vector<double>& out_vec ) {
     #pragma omp parallel for 
@@ -1220,11 +1222,15 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
         vdLn(N, S.data(), S.data());
         // cblas_dcopy(n1*n2, Cost.data(), 1, Cost.data(), 1);
         cblas_daxpy(N, -lambda_p, S.data(), 1, Cost.data(), 1);
-        mkl_domatcopy('C', 'T', n1, n2, 1.0, Cost.data(), n1, temp.data(), n2);     //here temp is transpose of cost matrix
 
         auto time_iter_1 = std::chrono::high_resolution_clock::now();
         Cost_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_1 - time_C_done).count()  ;
         // ---- Sinkhorn inner iterations ----
+#ifdef PARROT_CUDA_NATIVE_SINKHORN_INNER_LOOP
+        run_sinkhorn_iterations_cuda(Cost, n1, n2, inner_iters, lambda_total, a_row, b_col);
+        mkl_domatcopy('C', 'T', n1, n2, 1.0, Cost.data(), n1, temp.data(), n2);
+#else
+        mkl_domatcopy('C', 'T', n1, n2, 1.0, Cost.data(), n1, temp.data(), n2);     //here temp is transpose of cost matrix
         for (int j = 0; j < inner_iters; ++j) {
             auto t_0 = std::chrono::high_resolution_clock::now() ;
             // a_row = minaa_v3_dense(Cost, b_col, n1, n2, lambda_total);
@@ -1235,6 +1241,7 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
             auto t_2 = std::chrono::high_resolution_clock::now() ;
             compute_minbb += std::chrono::duration_cast<std::chrono::milliseconds>(t_2 - t_1).count()  ;
         }
+#endif
         auto time_iter_2 = std::chrono::high_resolution_clock::now();        
         inner_loop += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_2 - time_iter_1).count()  ;
 
