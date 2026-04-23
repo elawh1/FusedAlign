@@ -303,6 +303,48 @@ __global__ void minaa_v3_dense_kernel(const double* cost,
     }
 }
 
+__global__ void csr_row_avg_square_kernel(const int* row_offsets,
+                                          const double* values,
+                                          int rows,
+                                          double denom,
+                                          double* row_avg_sqr) {
+    const int row = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (row >= rows) return;
+
+    double square_sum = 0.0;
+    for (int idx = row_offsets[row]; idx < row_offsets[row + 1]; ++idx) {
+        const double value = values[idx];
+        square_sum += value * value;
+    }
+    row_avg_sqr[row] = square_sum / denom;
+}
+
+__global__ void compute_cost_fixed_kernel(double* cross_dist,
+                                          const double* row_avg_square_dist1,
+                                          const double* row_avg_square_dist2,
+                                          const double* h_log,
+                                          int n1,
+                                          int n2,
+                                          double lambda_e,
+                                          double lambda_a) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    if (idx >= total) return;
+
+    const int i = static_cast<int>(idx % static_cast<size_t>(n1));
+    const int j = static_cast<int>(idx / static_cast<size_t>(n1));
+    cross_dist[idx] += lambda_e * (row_avg_square_dist2[j] + row_avg_square_dist1[i]) - lambda_a * h_log[idx];
+}
+
+__global__ void apply_log_penalty_kernel(double* s, double* cost, size_t total, double lambda_p) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+
+    const double log_s = log(fmax(s[idx], 1e-300));
+    s[idx] = log_s;
+    cost[idx] -= lambda_p * log_s;
+}
+
 void transpose_col_major_matrix(const double* d_in,
                                 int rows,
                                 int cols,
@@ -323,6 +365,28 @@ void transpose_col_major_matrix(const double* d_in,
                              cols,
                              d_out,
                              cols));
+}
+
+double update_s_device(double* d_s,
+                       const double* d_s_old,
+                       const double* d_cost,
+                       const double* d_a_row,
+                       const double* d_b_col,
+                       int n1,
+                       int n2,
+                       double epsilon) {
+    const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    const unsigned int blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+    double* d_block_sums = nullptr;
+    std::vector<double> h_block_sums(blocks, 0.0);
+
+    CHECK_CUDA(cudaMalloc(&d_block_sums, blocks * sizeof(double)));
+    update_s_kernel<<<blocks, kBlockSize>>>(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, epsilon, d_block_sums);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaMemcpy(h_block_sums.data(), d_block_sums, blocks * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaFree(d_block_sums));
+
+    return std::accumulate(h_block_sums.begin(), h_block_sums.end(), 0.0);
 }
 
 void run_sinkhorn_iterations_cuda(const std::vector<double>& cost,
@@ -371,6 +435,114 @@ void run_sinkhorn_iterations_cuda(const std::vector<double>& cost,
     CHECK_CUDA(cudaFree(d_a_row));
     CHECK_CUDA(cudaFree(d_cost_t));
     CHECK_CUDA(cudaFree(d_cost));
+}
+
+void run_sinkhorn_iterations_cuda_device(const double* d_cost,
+                                         int n1,
+                                         int n2,
+                                         int inner_iters,
+                                         double epsilon,
+                                         double* d_a_row,
+                                         double* d_b_col,
+                                         double* d_cost_t,
+                                         cublasHandle_t blas_handle) {
+    if (inner_iters <= 0) {
+        return;
+    }
+
+    transpose_col_major_matrix(d_cost, n1, n2, d_cost_t, blas_handle);
+    for (int iter = 0; iter < inner_iters; ++iter) {
+        minaa_v3_dense_kernel<<<static_cast<unsigned int>(n2), kBlockSize>>>(d_cost, d_b_col, n1, n2, epsilon, d_a_row);
+        CHECK_CUDA(cudaGetLastError());
+        minaa_v3_dense_kernel<<<static_cast<unsigned int>(n1), kBlockSize>>>(d_cost_t, d_a_row, n2, n1, epsilon, d_b_col);
+        CHECK_CUDA(cudaGetLastError());
+    }
+}
+
+void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
+                                      DeviceCsrMatrix& d_row_norm_adj1,
+                                      DeviceCsrMatrix& d_row_norm_adj2,
+                                      DeviceCsrMatrix& d_intra_dist1,
+                                      DeviceCsrMatrix& d_intra_dist2,
+                                      const double* d_s,
+                                      int n1,
+                                      int n2,
+                                      const double* d_c_fixed,
+                                      double lambda_e,
+                                      double lambda_n,
+                                      double* d_cost,
+                                      double* d_buffer,
+                                      double* d_buffer2) {
+    cusparseDnMatDescr_t s_row_major = nullptr;
+    cusparseDnMatDescr_t cost_row_major = nullptr;
+    cusparseDnMatDescr_t cost_col_major = nullptr;
+    cusparseDnMatDescr_t buffer_col_major = nullptr;
+    cusparseDnMatDescr_t buffer2_col_major = nullptr;
+
+    CHECK_CUSPARSE(cusparseCreateDnMat(&s_row_major, n2, n1, n1, const_cast<double*>(d_s), CUDA_R_64F, CUSPARSE_ORDER_ROW));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&cost_row_major, n2, n1, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_ROW));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&cost_col_major, n1, n2, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_COL));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&buffer_col_major, n1, n2, n1, d_buffer, CUDA_R_64F, CUSPARSE_ORDER_COL));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&buffer2_col_major, n1, n2, n1, d_buffer2, CUDA_R_64F, CUSPARSE_ORDER_COL));
+
+    size_t workspace_1 = 0, workspace_2 = 0, workspace_3 = 0, workspace_4 = 0;
+    void* d_workspace_1 = nullptr;
+    void* d_workspace_2 = nullptr;
+    void* d_workspace_3 = nullptr;
+    void* d_workspace_4 = nullptr;
+
+    const double alpha_one = 1.0;
+    const double beta_zero = 0.0;
+    const double alpha_neg2_lambda_e = -2.0 * lambda_e;
+
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha_one, d_intra_dist2.descr, s_row_major, &beta_zero, cost_row_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_1));
+    CHECK_CUDA(cudaMalloc(&d_workspace_1, workspace_1));
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, d_intra_dist2.descr, s_row_major, &beta_zero, cost_row_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_1));
+
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha_neg2_lambda_e, d_intra_dist1.descr, cost_col_major, &beta_zero, buffer2_col_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_2));
+    CHECK_CUDA(cudaMalloc(&d_workspace_2, workspace_2));
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_neg2_lambda_e, d_intra_dist1.descr, cost_col_major, &beta_zero, buffer2_col_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_2));
+
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha_one, d_row_norm_adj2.descr, s_row_major, &beta_zero, cost_row_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_3));
+    CHECK_CUDA(cudaMalloc(&d_workspace_3, workspace_3));
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, d_row_norm_adj2.descr, s_row_major, &beta_zero, cost_row_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_3));
+
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha_one, d_row_norm_adj1.descr, cost_col_major, &beta_zero, buffer_col_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_4));
+    CHECK_CUDA(cudaMalloc(&d_workspace_4, workspace_4));
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, d_row_norm_adj1.descr, cost_col_major, &beta_zero, buffer_col_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_4));
+
+    const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    const unsigned int blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+    log_floor_inplace_kernel<<<blocks, kBlockSize>>>(d_buffer, matrix_size, 1e-15);
+    CHECK_CUDA(cudaGetLastError());
+    fuse_cost_terms_kernel<<<blocks, kBlockSize>>>(d_buffer2, d_buffer, d_c_fixed, lambda_n, matrix_size, d_cost);
+    CHECK_CUDA(cudaGetLastError());
+
+    CHECK_CUDA(cudaFree(d_workspace_4));
+    CHECK_CUDA(cudaFree(d_workspace_3));
+    CHECK_CUDA(cudaFree(d_workspace_2));
+    CHECK_CUDA(cudaFree(d_workspace_1));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(buffer2_col_major));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(buffer_col_major));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(cost_col_major));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(cost_row_major));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(s_row_major));
 }
 
 } // namespace
@@ -496,6 +668,67 @@ void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, cons
     CHECK_CUDA(cudaFree(d_cols));
     CHECK_CUDA(cudaFree(d_rows));
     CHECK_CUDA(cudaFree(d_matrix));
+}
+
+void compute_Cost_fixed(sparse_matrix_t& intra_dist1,
+                        sparse_matrix_t& intra_dist2,
+                        std::vector<double>& cross_dist,
+                        const std::vector<double>& H_log,
+                        int n1,
+                        int n2,
+                        double lambda_e,
+                        double lambda_a) {
+    const auto time_0 = std::chrono::high_resolution_clock::now();
+    const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    if (cross_dist.size() != matrix_size || H_log.size() != matrix_size) {
+        throw std::runtime_error("compute_Cost_fixed size mismatch");
+    }
+
+    DeviceCsrMatrix d_intra_dist1(intra_dist1);
+    DeviceCsrMatrix d_intra_dist2(intra_dist2);
+    double* d_row_avg_square_dist1 = nullptr;
+    double* d_row_avg_square_dist2 = nullptr;
+    double* d_cross_dist = nullptr;
+    double* d_h_log = nullptr;
+
+    CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist1, static_cast<size_t>(n1) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist2, static_cast<size_t>(n2) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_cross_dist, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_h_log, matrix_size * sizeof(double)));
+
+    CHECK_CUDA(cudaMemcpy(d_cross_dist, cross_dist.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_h_log, H_log.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+
+    const unsigned int blocks_row_1 = static_cast<unsigned int>((n1 + kBlockSize - 1) / kBlockSize);
+    const unsigned int blocks_row_2 = static_cast<unsigned int>((n2 + kBlockSize - 1) / kBlockSize);
+    csr_row_avg_square_kernel<<<blocks_row_1, kBlockSize>>>(d_intra_dist1.d_row_offsets, d_intra_dist1.d_vals, n1, static_cast<double>(n1), d_row_avg_square_dist1);
+    csr_row_avg_square_kernel<<<blocks_row_2, kBlockSize>>>(d_intra_dist2.d_row_offsets, d_intra_dist2.d_vals, n2, static_cast<double>(n2), d_row_avg_square_dist2);
+    CHECK_CUDA(cudaGetLastError());
+
+    const auto time_1 = std::chrono::high_resolution_clock::now();
+    const unsigned int blocks_matrix = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+    compute_cost_fixed_kernel<<<blocks_matrix, kBlockSize>>>(d_cross_dist,
+                                                             d_row_avg_square_dist1,
+                                                             d_row_avg_square_dist2,
+                                                             d_h_log,
+                                                             n1,
+                                                             n2,
+                                                             lambda_e,
+                                                             lambda_a);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaMemcpy(cross_dist.data(), d_cross_dist, matrix_size * sizeof(double), cudaMemcpyDeviceToHost));
+
+    CHECK_CUDA(cudaFree(d_h_log));
+    CHECK_CUDA(cudaFree(d_cross_dist));
+    CHECK_CUDA(cudaFree(d_row_avg_square_dist2));
+    CHECK_CUDA(cudaFree(d_row_avg_square_dist1));
+
+    const auto time_2 = std::chrono::high_resolution_clock::now();
+    std::cout << "in compute_Cost_fixed before loop  : "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(time_1 - time_0).count()
+              << " after loop  : "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(time_2 - time_1).count()
+              << std::endl;
 }
 
 void compute_cost_fused_2(sparse_matrix_t row_norm_adj1,
@@ -830,6 +1063,208 @@ void minaa_v3_dense(std::vector<double>& Cost,
     CHECK_CUDA(cudaFree(d_cost));
 }
 
+std::vector<double> con_prox_pt_opt(sparse_matrix_t row_norm_adj1,
+                                    sparse_matrix_t row_norm_adj2,
+                                    int n1,
+                                    int n2,
+                                    int avg_nnz1_per_n1,
+                                    int avg_nnz2_per_n2,
+                                    std::vector<double>& cross_dist,
+                                    sparse_matrix_t intra_dist1_sparse,
+                                    sparse_matrix_t intra_dist2_sparse,
+                                    int inner_iters,
+                                    int outer_iters,
+                                    double lambda_n,
+                                    double lambda_a,
+                                    double lambda_p,
+                                    double lambda_e_in,
+                                    const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs,
+                                    bool sparsify) {
+    (void)avg_nnz1_per_n1;
+    (void)avg_nnz2_per_n2;
+    (void)sparsify;
+
+    const auto time_0 = std::chrono::high_resolution_clock::now();
+    const double lambda_total = lambda_n + lambda_a + lambda_p;
+    const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    const double lambda_e = lambda_e_in * matrix_size;
+    std::vector<double> S(matrix_size, 1.0 / static_cast<double>(matrix_size));
+    std::vector<double> H_log = init_Hlog_with_anchors(n1, n2, anchor_pairs);
+    const auto time_1 = std::chrono::high_resolution_clock::now();
+    std::cout << "initialization in optimization : "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(time_1 - time_0).count()
+              << " ms" << std::endl;
+
+    sparse_matrix_t row_norm_adj1_tr = nullptr;
+    sparse_matrix_t row_norm_adj2_tr = nullptr;
+    auto st = mkl_sparse_convert_csr(row_norm_adj1, SPARSE_OPERATION_TRANSPOSE, &row_norm_adj1_tr);
+    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("row_norm_adj1 transpose failed");
+    st = mkl_sparse_convert_csr(row_norm_adj2, SPARSE_OPERATION_TRANSPOSE, &row_norm_adj2_tr);
+    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("row_norm_adj2 transpose failed");
+
+    CusparseHandle sp_handle;
+    CublasHandle blas_handle;
+    DeviceCsrMatrix d_row_norm_adj1_tr(row_norm_adj1_tr);
+    DeviceCsrMatrix d_row_norm_adj2(row_norm_adj2);
+    DeviceCsrMatrix d_intra_dist1(intra_dist1_sparse);
+    DeviceCsrMatrix d_intra_dist2(intra_dist2_sparse);
+
+    double* d_s = nullptr;
+    double* d_s_old = nullptr;
+    double* d_cost = nullptr;
+    double* d_cost_buff = nullptr;
+    double* d_c_fixed = nullptr;
+    double* d_a_row = nullptr;
+    double* d_b_col = nullptr;
+    double* d_buffer = nullptr;
+    double* d_buffer2 = nullptr;
+    double* d_cost_t = nullptr;
+    double* d_h_log = nullptr;
+    double* d_row_avg_square_dist1 = nullptr;
+    double* d_row_avg_square_dist2 = nullptr;
+
+    CHECK_CUDA(cudaMalloc(&d_s, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_s_old, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_cost, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_cost_buff, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_c_fixed, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_a_row, static_cast<size_t>(n2) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_b_col, static_cast<size_t>(n1) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_buffer, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_buffer2, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_cost_t, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_h_log, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist1, static_cast<size_t>(n1) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist2, static_cast<size_t>(n2) * sizeof(double)));
+
+    CHECK_CUDA(cudaMemcpy(d_s, S.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_c_fixed, cross_dist.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_h_log, H_log.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemset(d_a_row, 0, static_cast<size_t>(n2) * sizeof(double)));
+    std::vector<double> b_col(static_cast<size_t>(n1), 1.0 / static_cast<double>(n2));
+    CHECK_CUDA(cudaMemcpy(d_b_col, b_col.data(), static_cast<size_t>(n1) * sizeof(double), cudaMemcpyHostToDevice));
+    H_log.clear();
+    H_log.shrink_to_fit();
+
+    const unsigned int blocks_row_1 = static_cast<unsigned int>((n1 + kBlockSize - 1) / kBlockSize);
+    const unsigned int blocks_row_2 = static_cast<unsigned int>((n2 + kBlockSize - 1) / kBlockSize);
+    csr_row_avg_square_kernel<<<blocks_row_1, kBlockSize>>>(d_intra_dist1.d_row_offsets,
+                                                            d_intra_dist1.d_vals,
+                                                            n1,
+                                                            static_cast<double>(n1),
+                                                            d_row_avg_square_dist1);
+    csr_row_avg_square_kernel<<<blocks_row_2, kBlockSize>>>(d_intra_dist2.d_row_offsets,
+                                                            d_intra_dist2.d_vals,
+                                                            n2,
+                                                            static_cast<double>(n2),
+                                                            d_row_avg_square_dist2);
+    CHECK_CUDA(cudaGetLastError());
+    const unsigned int blocks_matrix = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+    compute_cost_fixed_kernel<<<blocks_matrix, kBlockSize>>>(d_c_fixed,
+                                                             d_row_avg_square_dist1,
+                                                             d_row_avg_square_dist2,
+                                                             d_h_log,
+                                                             n1,
+                                                             n2,
+                                                             lambda_e,
+                                                             lambda_a);
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaFree(d_h_log));
+    CHECK_CUDA(cudaFree(d_row_avg_square_dist2));
+    CHECK_CUDA(cudaFree(d_row_avg_square_dist1));
+
+    const auto time_2 = std::chrono::high_resolution_clock::now();
+    std::cout << "L_fixed computation in optimization : "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(time_2 - time_1).count()
+              << " ms" << std::endl << std::endl;
+
+    bool has_cost_old = false;
+    double c_compute_time = 0.0;
+    double cost_compute_time = 0.0;
+    double inner_loop = 0.0;
+    double update_s_time = 0.0;
+
+    for (int it = 0; it < outer_iters; ++it) {
+        printf("----- outer iterration %d ----\n", it);
+        CHECK_CUDA(cudaMemcpy(d_s_old, d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
+
+        const auto time_l_done = std::chrono::high_resolution_clock::now();
+        compute_cost_fused_2_cuda_device(sp_handle.handle,
+                                         d_row_norm_adj1_tr,
+                                         d_row_norm_adj2,
+                                         d_intra_dist1,
+                                         d_intra_dist2,
+                                         d_s,
+                                         n1,
+                                         n2,
+                                         d_c_fixed,
+                                         lambda_e,
+                                         lambda_n,
+                                         d_cost,
+                                         d_buffer,
+                                         d_buffer2);
+        const auto time_c_done = std::chrono::high_resolution_clock::now();
+        c_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_c_done - time_l_done).count();
+
+        if (!has_cost_old) {
+            CHECK_CUDA(cudaMemcpy(d_cost_buff, d_cost, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
+            has_cost_old = true;
+        } else {
+            double w_old = 0.0;
+            double w = 0.0;
+            CHECK_CUBLAS(cublasDdot(blas_handle.handle, static_cast<int>(matrix_size), d_s, 1, d_cost_buff, 1, &w_old));
+            CHECK_CUBLAS(cublasDdot(blas_handle.handle, static_cast<int>(matrix_size), d_s, 1, d_cost, 1, &w));
+            if (w <= w_old) {
+                CHECK_CUDA(cudaMemcpy(d_cost_buff, d_cost, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
+            } else {
+                CHECK_CUDA(cudaMemcpy(d_cost, d_cost_buff, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
+            }
+        }
+
+        apply_log_penalty_kernel<<<blocks_matrix, kBlockSize>>>(d_s, d_cost, matrix_size, lambda_p);
+        CHECK_CUDA(cudaGetLastError());
+        const auto time_iter_1 = std::chrono::high_resolution_clock::now();
+        cost_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_1 - time_c_done).count();
+
+        run_sinkhorn_iterations_cuda_device(d_cost, n1, n2, inner_iters, lambda_total, d_a_row, d_b_col, d_cost_t, blas_handle.handle);
+        const auto time_iter_2 = std::chrono::high_resolution_clock::now();
+        inner_loop += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_2 - time_iter_1).count();
+
+        const double diff_s = update_s_device(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, lambda_total);
+        const auto time_iter_3 = std::chrono::high_resolution_clock::now();
+        update_s_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_3 - time_iter_2).count();
+        printf("inner iter %d and diff of S %.6f\n\n", it, diff_s);
+    }
+
+    CHECK_CUDA(cudaMemcpy(S.data(), d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToHost));
+
+    CHECK_CUDA(cudaFree(d_cost_t));
+    CHECK_CUDA(cudaFree(d_buffer2));
+    CHECK_CUDA(cudaFree(d_buffer));
+    CHECK_CUDA(cudaFree(d_b_col));
+    CHECK_CUDA(cudaFree(d_a_row));
+    CHECK_CUDA(cudaFree(d_c_fixed));
+    CHECK_CUDA(cudaFree(d_cost_buff));
+    CHECK_CUDA(cudaFree(d_cost));
+    CHECK_CUDA(cudaFree(d_s_old));
+    CHECK_CUDA(cudaFree(d_s));
+    mkl_sparse_destroy(row_norm_adj2_tr);
+    mkl_sparse_destroy(row_norm_adj1_tr);
+
+    const auto time_4 = std::chrono::high_resolution_clock::now();
+    std::cout << "total time of 10 outer iterations : "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(time_4 - time_2).count()
+              << " ms" << std::endl;
+    std::cout << " C_compute_time : " << c_compute_time
+              << " Cost_compute_time : " << cost_compute_time
+              << " inner loop : " << inner_loop
+              << " update_S : " << update_s_time
+              << " ms" << std::endl;
+    std::cout << "done con_prox_pt_opt_init" << std::endl;
+    return S;
+}
+
+
 sparse_matrix_t row_normalize_graph(sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
     std::vector<double> all_ones(n, 1.0);
     std::vector<double> graph_row_sum(n, 0.0);
@@ -1031,6 +1466,8 @@ sparse_matrix_t row_normalize_graph(sparse_matrix_t graph, int n, MKL_INT avg_nn
 #define PARROT_CUDA_NATIVE_SINKHORN_INNER_LOOP
 #define PARROT_CUDA_NATIVE_MINAA_V3_DENSE
 #define PARROT_CUDA_NATIVE_UPDATE_S_MAT
+#define PARROT_CUDA_NATIVE_COMPUTE_COST_FIXED
+#define PARROT_CUDA_NATIVE_CON_PROX_PT_OPT
 #define PARROT_CUDA_NATIVE_COMPUTE_COST_FUSED_2
 #define PARROT_CUDA_NATIVE_HELPERS
 #include "../../src/helper.cpp"

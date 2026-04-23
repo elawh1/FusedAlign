@@ -892,6 +892,7 @@ void compute_L_fixed( sparse_matrix_t& intra_dist1, sparse_matrix_t& intra_dist2
 }
 
 
+ #ifndef PARROT_CUDA_NATIVE_COMPUTE_COST_FIXED
 void compute_Cost_fixed( sparse_matrix_t& intra_dist1, sparse_matrix_t& intra_dist2, std::vector<double>& cross_dist, const std::vector<double>& H_log, 
         int n1, int n2, double lambda_e, double lambda_a ) {
     auto time_0 = std::chrono::high_resolution_clock::now();
@@ -917,6 +918,7 @@ void compute_Cost_fixed( sparse_matrix_t& intra_dist1, sparse_matrix_t& intra_di
     std::cout << "in compute_Cost_fixed before loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() << 
     " after loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << std::endl;
 }
+#endif
 
 void compute_RW_term ( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, const std::vector<double>& S, int n1, int n2, std::vector<double>& RW_term) {
     std::vector<double> buffer(n1*n2);
@@ -1154,6 +1156,7 @@ double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, c
 }
 #endif
 
+#ifndef PARROT_CUDA_NATIVE_CON_PROX_PT_OPT
 std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, int n1, int n2,int avg_nnz1_per_n1, int avg_nnz2_per_n2, 
     std::vector<double>& cross_dist, sparse_matrix_t intra_dist1_sparse, sparse_matrix_t intra_dist2_sparse, int inner_iters, int outer_iters, double lambda_n, double lambda_a, 
     double lambda_p, double lambda_e_in, const std::pair<std::vector<MKL_INT>,std::vector<MKL_INT>>& anchor_pairs, bool sparsify) {
@@ -1275,3 +1278,4 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
     std::cout << "done con_prox_pt_opt_init" << std::endl;
     return S;
 }   
+#endif
