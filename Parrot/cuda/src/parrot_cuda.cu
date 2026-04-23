@@ -1,10 +1,5 @@
 #include <iostream>
 #include <vector>
-#ifdef MKL_AVAILABLE
-#include <mkl.h>
-#include <mkl_vml.h>
-#include <omp.h>
-#endif
 #include <string>
 #include <sstream>
 #include <algorithm>
@@ -12,8 +7,6 @@
 #include <ctime> 
 #include <chrono>
 #include "accuracy.h"
-#include "helper.h"
-#include "helper2.h"
 #include "cuda_helper.cuh"
 
 int main(int argc, char* argv[]){ 
@@ -34,27 +27,23 @@ int main(int argc, char* argv[]){
         sparsify = std::stoi(argv[2]);
     }
     load_config(data_path, g1_num_nodes, g2_num_nodes, use_attr, directed, inner_iters, outer_iters);
-    printf("MKL threads: %d\n", mkl_get_max_threads());
-    printf("MKL dynamic: %d\n", mkl_get_dynamic());
-    // printf("MKL threading layer: %d\n", mkl_get_threading_layer());
-    printf("OMP max threads: %d\n", omp_get_max_threads());
-    printf("OMP in parallel region? %d\n", omp_in_parallel());
     printf("graph1 #nodes %d -- graph2 #nodes %d -- directed %d -- use node attributes %d\n\n", g1_num_nodes, g2_num_nodes, directed, use_attr);
 
-    
-    sparse_matrix_t graph1_py, graph2_py;
-    MKL_INT avg_nnz1_per_n1, avg_nnz2_per_n2;
+    CudaCsrMatrix graph1_py;
+    CudaCsrMatrix graph2_py;
+    int avg_nnz1_per_n1 = 0;
+    int avg_nnz2_per_n2 = 0;
     {
         std::vector<double> g1_edgelist = readFileToVector(data_path + "/graph1.txt", directed);
-        graph1_py = make_mat_from_edgelist(g1_edgelist, g1_num_nodes, g1_num_nodes);        //row major csr
-        avg_nnz1_per_n1 = (int) g1_edgelist.size()/g1_num_nodes;
+        graph1_py = make_cuda_csr_from_edgelist(g1_edgelist, g1_num_nodes, g1_num_nodes);
+        avg_nnz1_per_n1 = static_cast<int>(g1_edgelist.size()) / g1_num_nodes;
     }
     {
         std::vector<double> g2_edgelist = readFileToVector(data_path + "/graph2.txt", directed);
-        graph2_py = make_mat_from_edgelist(g2_edgelist, g2_num_nodes, g2_num_nodes);        //row major csr
-        avg_nnz2_per_n2 = (int) g2_edgelist.size()/g2_num_nodes;
+        graph2_py = make_cuda_csr_from_edgelist(g2_edgelist, g2_num_nodes, g2_num_nodes);
+        avg_nnz2_per_n2 = static_cast<int>(g2_edgelist.size()) / g2_num_nodes;
     }
-    std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> anchor_pairs, anchor_pairs_test;
+    std::pair<std::vector<int>, std::vector<int>> anchor_pairs, anchor_pairs_test;
     {
         std::vector<double> anchors = readFileToVector(data_path + "/anchor_links.txt", directed);
         anchor_pairs = get_anchor_pairs(anchors);
@@ -75,87 +64,112 @@ int main(int argc, char* argv[]){
 
     auto time_0 = std::chrono::high_resolution_clock::now();
     //normalize graph adjacencies
-    sparse_matrix_t graph1_row_normalized = row_normalize_graph(graph1_py, g1_num_nodes, avg_nnz1_per_n1);
-    sparse_matrix_t graph2_row_normalized = row_normalize_graph(graph2_py, g2_num_nodes, avg_nnz2_per_n2);
+    CudaCsrMatrix graph1_row_normalized = row_normalize_graph_cuda(graph1_py, avg_nnz1_per_n1);
+    CudaCsrMatrix graph2_row_normalized = row_normalize_graph_cuda(graph2_py, avg_nnz2_per_n2);
     auto time_1 = std::chrono::high_resolution_clock::now();
     std::cout << "row normalizing graphs : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << " ms" << std::endl;
 
     //Free graphs - we will use normalized graph from now on
-    mkl_sparse_destroy(graph1_py);  graph1_py = nullptr;
-    mkl_sparse_destroy(graph2_py);  graph2_py = nullptr;
+    destroy_cuda_csr(graph1_py);
+    destroy_cuda_csr(graph2_py);
 
-    std::vector<double>  g1_rwr ((size_t) g1_num_nodes * (size_t) l);
-    get_batch_rwr_scores_cusparse(graph1_row_normalized, anchor_pairs.first, g1_num_nodes, avg_nnz1_per_n1, directed, 0.15, 100, true, g1_rwr);
+    double* d_g1_rwr = nullptr;
+    double* d_g2_rwr = nullptr;
+    double* d_g1_feat = nullptr;
+    double* d_g2_feat = nullptr;
+    double* d_cross_rwr_dist = nullptr;
+    double* d_cross_attr_dist = nullptr;
+    double* d_cross_dist = nullptr;
+    const size_t g1_rwr_size = static_cast<size_t>(g1_num_nodes) * static_cast<size_t>(l);
+    const size_t g2_rwr_size = static_cast<size_t>(g2_num_nodes) * static_cast<size_t>(l);
+    const size_t cross_size = static_cast<size_t>(g1_num_nodes) * static_cast<size_t>(g2_num_nodes);
+
+    CHECK_CUDA(cudaMalloc(&d_g1_rwr, g1_rwr_size * sizeof(double)));
+    get_batch_rwr_scores_cusparse_device(graph1_row_normalized, anchor_pairs.first, g1_num_nodes, 0.15, 100, d_g1_rwr);
     auto time_2 = std::chrono::high_resolution_clock::now();
     std::cout << "graph1 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << " ms" << std::endl;
-    std::vector<double>  g2_rwr ((size_t) g2_num_nodes * (size_t) l);
-    get_batch_rwr_scores_cusparse(graph2_row_normalized, anchor_pairs.second, g2_num_nodes, avg_nnz2_per_n2, directed, 0.15, 100, true, g2_rwr);
+    CHECK_CUDA(cudaMalloc(&d_g2_rwr, g2_rwr_size * sizeof(double)));
+    get_batch_rwr_scores_cusparse_device(graph2_row_normalized, anchor_pairs.second, g2_num_nodes, 0.15, 100, d_g2_rwr);
     auto time_3 = std::chrono::high_resolution_clock::now();
     std::cout << "graph2 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << " ms" << std::endl;
-    
-    // std::vector<double> cross_rwr_dist (g1_num_nodes * g2_num_nodes);
-    // if (use_attr) {
-    //     get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l, cross_rwr_dist);
-    //     std::vector<double> cross_attr_dist (g1_num_nodes * g2_num_nodes);
-    //     get_normalized_neg_exp_dist (g1_feat, g2_feat, g1_num_nodes, g2_num_nodes, g1_feat.size() / g1_num_nodes, cross_attr_dist);
-    //     cblas_daxpy(cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_rwr_dist.data(), 1);
-    //     cross_attr_dist.clear(); cross_attr_dist.shrink_to_fit();
-    // }
-    // else {
-    //     get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l, cross_rwr_dist);
-    //     cblas_dscal(g1_num_nodes * g2_num_nodes, (double) 1.5, cross_rwr_dist.data(), 1);
-    //     // cross_attr_dist = cross_rwr_dist;
-    //     // cblas_daxpy(cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_attr_dist.data(), 1);
-    // }
 
     //row normalize rwr for both graphs
-    l2_norm_inplace(g1_rwr, g1_num_nodes, l);
-    l2_norm_inplace(g2_rwr, g2_num_nodes, l);
+    l2_norm_inplace_device(d_g1_rwr, g1_num_nodes, l);
+    l2_norm_inplace_device(d_g2_rwr, g2_num_nodes, l);
 
-    std::vector<double> cross_rwr_dist((size_t) g1_num_nodes * (size_t) g2_num_nodes);
-    get_normalized_neg_exp_dist(g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l, cross_rwr_dist);
+    CHECK_CUDA(cudaMalloc(&d_cross_rwr_dist, cross_size * sizeof(double)));
+    get_normalized_neg_exp_dist_device(d_g1_rwr, d_g2_rwr, g1_num_nodes, g2_num_nodes, l, d_cross_rwr_dist);
     if (use_attr) {
-        l2_norm_inplace(g1_feat, g1_num_nodes,  (size_t) g1_feat.size() / (size_t) g1_num_nodes);
-        l2_norm_inplace(g2_feat, g2_num_nodes,  (size_t) g2_feat.size() / (size_t) g2_num_nodes);
-        std::vector<double> cross_attr_dist((size_t) g1_num_nodes * (size_t) g2_num_nodes);
-        get_normalized_neg_exp_dist(g1_feat, g2_feat,  (size_t) g1_num_nodes,  (size_t) g2_num_nodes,  (size_t) g1_feat.size() / (size_t) g1_num_nodes, cross_attr_dist);
-        cblas_daxpy((size_t) cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_attr_dist.data(), 1);
-        cross_rwr_dist.swap(cross_attr_dist);
+        const size_t g1_feat_dim = g1_feat.size() / static_cast<size_t>(g1_num_nodes);
+        const size_t g2_feat_dim = g2_feat.size() / static_cast<size_t>(g2_num_nodes);
+        CHECK_CUDA(cudaMalloc(&d_g1_feat, g1_feat.size() * sizeof(double)));
+        CHECK_CUDA(cudaMalloc(&d_g2_feat, g2_feat.size() * sizeof(double)));
+        CHECK_CUDA(cudaMemcpy(d_g1_feat, g1_feat.data(), g1_feat.size() * sizeof(double), cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaMemcpy(d_g2_feat, g2_feat.data(), g2_feat.size() * sizeof(double), cudaMemcpyHostToDevice));
+        l2_norm_inplace_device(d_g1_feat, g1_num_nodes, g1_feat_dim);
+        l2_norm_inplace_device(d_g2_feat, g2_num_nodes, g2_feat_dim);
+
+        CHECK_CUDA(cudaMalloc(&d_cross_attr_dist, cross_size * sizeof(double)));
+        get_normalized_neg_exp_dist_device(d_g1_feat, d_g2_feat, g1_num_nodes, g2_num_nodes, static_cast<int>(g1_feat_dim), d_cross_attr_dist);
+
+        cublasHandle_t blend_handle = nullptr;
+        CHECK_CUBLAS(cublasCreate(&blend_handle));
+        const double alpha = 0.5;
+        CHECK_CUBLAS(cublasDaxpy(blend_handle, static_cast<int>(cross_size), &alpha, d_cross_rwr_dist, 1, d_cross_attr_dist, 1));
+        CHECK_CUBLAS(cublasDestroy(blend_handle));
+
+        CHECK_CUDA(cudaFree(d_cross_rwr_dist));
+        d_cross_rwr_dist = d_cross_attr_dist;
+        d_cross_attr_dist = nullptr;
     } else {
-        cblas_dscal(((size_t) g1_num_nodes * (size_t) g2_num_nodes), 1.5, cross_rwr_dist.data(), 1);
+        cublasHandle_t scale_handle = nullptr;
+        CHECK_CUBLAS(cublasCreate(&scale_handle));
+        const double scale = 1.5;
+        CHECK_CUBLAS(cublasDscal(scale_handle, static_cast<int>(cross_size), &scale, d_cross_rwr_dist, 1));
+        CHECK_CUBLAS(cublasDestroy(scale_handle));
     }
     //make the anchor links cross rwr dist zero
-    anchor_cost_zero(cross_rwr_dist, g1_num_nodes, g2_num_nodes, anchor_pairs, 0.0);
+    anchor_cost_zero_device(d_cross_rwr_dist, g1_num_nodes, g2_num_nodes, anchor_pairs, 0.0);
     auto time_4 = std::chrono::high_resolution_clock::now();
     std::cout << "cross_rwr_dist computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << " ms" << std::endl;
 
     auto time_7 = std::chrono::high_resolution_clock::now();
-    sparse_matrix_t intra_rwr1_masked_sddmm = nullptr;
-    if (use_attr) masked_sddmm_intra_cost_cusparse(g1_feat, graph1_row_normalized, g1_num_nodes, (g1_feat.size()) / g1_num_nodes, intra_rwr1_masked_sddmm);
-    else masked_sddmm_intra_cost_cusparse(g1_rwr, graph1_row_normalized, g1_num_nodes, l, intra_rwr1_masked_sddmm);
+    CudaCsrMatrix intra_rwr1_masked_sddmm;
+    if (use_attr) intra_rwr1_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g1_feat, graph1_row_normalized, g1_num_nodes, static_cast<int>(g1_feat.size() / static_cast<size_t>(g1_num_nodes)));
+    else intra_rwr1_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g1_rwr, graph1_row_normalized, g1_num_nodes, l);
     auto time_8 = std::chrono::high_resolution_clock::now();
     std::cout << "g1 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_8-time_7).count() << " ms" << std::endl;
 
-    sparse_matrix_t intra_rwr2_masked_sddmm = nullptr;
-    if (use_attr) masked_sddmm_intra_cost_cusparse(g2_feat, graph2_row_normalized, g2_num_nodes, (g2_feat.size()) / g2_num_nodes, intra_rwr2_masked_sddmm);
-    else masked_sddmm_intra_cost_cusparse(g2_rwr, graph2_row_normalized, g2_num_nodes, l, intra_rwr2_masked_sddmm);
+    CudaCsrMatrix intra_rwr2_masked_sddmm;
+    if (use_attr) intra_rwr2_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g2_feat, graph2_row_normalized, g2_num_nodes, static_cast<int>(g2_feat.size() / static_cast<size_t>(g2_num_nodes)));
+    else intra_rwr2_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g2_rwr, graph2_row_normalized, g2_num_nodes, l);
     auto time_9 = std::chrono::high_resolution_clock::now();
     std::cout << "g2 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_9-time_8).count()  << " ms" << std::endl;
 
     //Free some memory 
     g1_feat.clear(); g1_feat.shrink_to_fit();
     g2_feat.clear(); g2_feat.shrink_to_fit();
-    g1_rwr.clear(); g1_rwr.shrink_to_fit();
-    g2_rwr.clear(); g2_rwr.shrink_to_fit();
+    CHECK_CUDA(cudaFree(d_g1_rwr));
+    CHECK_CUDA(cudaFree(d_g2_rwr));
+    d_g1_rwr = nullptr;
+    d_g2_rwr = nullptr;
+    if (d_g1_feat != nullptr) CHECK_CUDA(cudaFree(d_g1_feat));
+    if (d_g2_feat != nullptr) CHECK_CUDA(cudaFree(d_g2_feat));
+    d_g1_feat = nullptr;
+    d_g2_feat = nullptr;
 
     //Compute cross_dist
     auto time_10 = std::chrono::high_resolution_clock::now();
-    std::vector<double> cross_dist = get_product_rwr_mat_cusparse(graph1_row_normalized, graph2_row_normalized, cross_rwr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75); 
-    cross_rwr_dist.clear(); cross_rwr_dist.shrink_to_fit();
+    CHECK_CUDA(cudaMalloc(&d_cross_dist, cross_size * sizeof(double)));
+    get_product_rwr_mat_cusparse_device(graph1_row_normalized, graph2_row_normalized, d_cross_rwr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75, d_cross_dist);
+    CHECK_CUDA(cudaFree(d_cross_rwr_dist));
+    d_cross_rwr_dist = nullptr;
     auto time_11 = std::chrono::high_resolution_clock::now();
     std::cout << "cross_dist computation completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_11-time_10).count()   << " ms" << std::endl;
-    std::vector<double> S = con_prox_pt_opt(graph1_row_normalized, graph2_row_normalized, g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, cross_dist, intra_rwr1_masked_sddmm, 
+    std::vector<double> S = con_prox_pt_opt_device(graph1_row_normalized, graph2_row_normalized, g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, d_cross_dist, intra_rwr1_masked_sddmm, 
         intra_rwr2_masked_sddmm, inner_iters, outer_iters, 5e-3, 5e-4, 5e-4, 1e-5, anchor_pairs, sparsify);
+    CHECK_CUDA(cudaFree(d_cross_dist));
+    d_cross_dist = nullptr;
     auto time_12 = std::chrono::high_resolution_clock::now();
     std::cout << "con_prox_pt_opt completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_12-time_11).count() << " ms" << std::endl;
     std::cout << "algorithm completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_12-time_0).count()  << " ms" << std::endl;
@@ -168,6 +182,11 @@ int main(int argc, char* argv[]){
 
     double mrr = mrr_mean_score_cpp( S, g1_num_nodes, g2_num_nodes, anchor_pairs_test);
     std::cout << "mrr : " << mrr << std::endl;
+
+    destroy_cuda_csr(intra_rwr2_masked_sddmm);
+    destroy_cuda_csr(intra_rwr1_masked_sddmm);
+    destroy_cuda_csr(graph2_row_normalized);
+    destroy_cuda_csr(graph1_row_normalized);
 
     return 0;
 }

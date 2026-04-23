@@ -1,35 +1,28 @@
 #pragma once
 
-#ifdef MKL_AVAILABLE
-#include <mkl.h>
-#include <omp.h>
-#include <mkl_vml.h>
-#endif
-#include <cstdio>
-#include <cinttypes>   
-#include <iostream>
-#include <vector>
-#include <cassert>
-#include <cmath>
 #include <algorithm>
-#include <fstream>
+#include <cassert>
 #include <chrono>
-#include <unordered_map>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
 #include <numeric>
 #include <set>
-
-#include <cstdlib>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cublas_v2.h>
-
-#include <cuda_fp16.h>
 #include <cusparseLt.h>
 
-#include <stdexcept>
-#include <cstdint>
-
+using MKL_INT = int;
 
 #define CHECK_CUDA(call)                                                         \
     do {                                                                         \
@@ -51,38 +44,74 @@
         }                                                                        \
     } while (0)
 
-#define CHECK_CUBLAS(call)                                                     \
-do {                                                                           \
-    cublasStatus_t st__ = (call);                                              \
-    if (st__ != CUBLAS_STATUS_SUCCESS) {                                       \
-        std::cerr << "cuBLAS error at " << __FILE__ << ":" << __LINE__         \
-                  << " -> status " << static_cast<int>(st__) << std::endl;     \
-        std::exit(EXIT_FAILURE);                                               \
-    }                                                                          \
+#define CHECK_CUBLAS(call)                                                       \
+do {                                                                             \
+    cublasStatus_t st__ = (call);                                                \
+    if (st__ != CUBLAS_STATUS_SUCCESS) {                                         \
+        std::cerr << "cuBLAS error at " << __FILE__ << ":" << __LINE__          \
+                  << " -> status " << static_cast<int>(st__) << std::endl;      \
+        std::exit(EXIT_FAILURE);                                                 \
+    }                                                                            \
 } while (0)
 
-#define CHECK_CUSPARSELT(func) {                                               \
-    cusparseStatus_t status = (func);                                          \
-    if (status != CUSPARSE_STATUS_SUCCESS) {                                   \
-        std::cerr << "cuSPARSELt Error: " << status << " at line " << __LINE__ \
-                  << std::endl;                                                \
-        exit(EXIT_FAILURE);                                                    \
-    }                                                                          \
+#define CHECK_CUSPARSELT(func) {                                                 \
+    cusparseStatus_t status = (func);                                            \
+    if (status != CUSPARSE_STATUS_SUCCESS) {                                     \
+        std::cerr << "cuSPARSELt Error: " << status << " at line " << __LINE__  \
+                  << std::endl;                                                  \
+        exit(EXIT_FAILURE);                                                      \
+    }                                                                            \
 }
 
-// randomwalk.cu
-void get_batch_rwr_scores_cusparse(sparse_matrix_t graph, std::vector<MKL_INT> anchors, 
-                                    MKL_INT n, MKL_INT avg_nnz_per_n, bool directed, 
-                                    float restart_prob, int max_iters, bool connect_isolated, 
-                                    std::vector<double>& Xnext_vals);
+struct CudaCsrMatrix {
+    int rows = 0;
+    int cols = 0;
+    int nnz = 0;
+    int* d_row_offsets = nullptr;
+    int* d_col_ind = nullptr;
+    double* d_vals = nullptr;
+    cusparseSpMatDescr_t descr = nullptr;
+};
 
-std::vector<double> get_product_rwr_mat_cusparse( sparse_matrix_t graph1_normalized, 
-                                                    sparse_matrix_t graph2_normalized, 
-                                                    const std::vector<double>& in_cross_dist, 
-                                                    int n1, int n2, double rwr_restart_prob, 
-                                                    double gamma, int max_iters = 50, 
-                                                    double tol = 1e-2);
+void destroy_cuda_csr(CudaCsrMatrix& matrix);
+CudaCsrMatrix make_cuda_csr_from_edgelist(const std::vector<double>& edgelist, int m, int n);
+CudaCsrMatrix transpose_cuda_csr(const CudaCsrMatrix& matrix);
+CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_per_n);
 
-//sddmm.cu
-void masked_sddmm_intra_cost_cusparse( std::vector<double>& emb, sparse_matrix_t mask, 
-                                        int n, int L, sparse_matrix_t& result);
+void load_config(const std::string& data_path, int& g1_num_nodes, int& g2_num_nodes,
+                 bool& use_attr, bool& directed, int& inner_iters, int& outer_iters);
+std::vector<double> readFileToVector(const std::string& filename, bool directed);
+std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(std::vector<double>& H_vec);
+std::vector<double> init_Hlog_with_anchors(int nrows, int ncols,
+                                           const std::pair<std::vector<int>, std::vector<int>>& anchors);
+
+void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors,
+                                          int n, float restart_prob, int max_iters,
+                                          double* d_X_out);
+void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
+                                         const CudaCsrMatrix& graph2_normalized,
+                                         const double* d_in_cross_dist,
+                                         int n1, int n2, double rwr_restart_prob,
+                                         double gamma, double* d_out_cross_dist,
+                                         int max_iters = 50, double tol = 1e-2);
+
+CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(const double* d_emb,
+                                                      const CudaCsrMatrix& mask,
+                                                      int n, int L);
+
+void l2_norm_inplace_device(double* d_rwr, size_t n, size_t d);
+void get_normalized_neg_exp_dist_device(const double* d_rwr1, const double* d_rwr2,
+                                        int n1, int n2, int l, double* d_cross_rwr_dist);
+void anchor_cost_zero_device(double* d_A, int nrows, int ncols,
+                             const std::pair<std::vector<int>, std::vector<int>>& anchors,
+                             double val);
+std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
+                                           const CudaCsrMatrix& row_norm_adj2,
+                                           int n1, int n2, int avg_nnz1_per_n1, int avg_nnz2_per_n2,
+                                           const double* d_cross_dist,
+                                           const CudaCsrMatrix& intra_dist1_sparse,
+                                           const CudaCsrMatrix& intra_dist2_sparse,
+                                           int inner_iters, int outer_iters, double lambda_n, double lambda_a,
+                                           double lambda_p, double lambda_e_in,
+                                           const std::pair<std::vector<int>, std::vector<int>>& anchor_pairs,
+                                           bool sparsify);
