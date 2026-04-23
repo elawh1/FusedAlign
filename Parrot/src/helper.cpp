@@ -1129,6 +1129,7 @@ void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_no
 #endif
 
 
+#ifndef PARROT_CUDA_NATIVE_UPDATE_S_MAT
 double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, const std::vector<double>& Cost, const std::vector<double>& a_row, const std::vector<double>& b_col, int n1, int n2, double epsilon) {
 
     unsigned int numThreads = mkl_get_max_threads();
@@ -1149,6 +1150,7 @@ double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, c
 
     return  std::accumulate(sum_diss_S.begin(), sum_diss_S.end(), 0); 
 }
+#endif
 
 std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, int n1, int n2,int avg_nnz1_per_n1, int avg_nnz2_per_n2, 
     std::vector<double>& cross_dist, sparse_matrix_t intra_dist1_sparse, sparse_matrix_t intra_dist2_sparse, int inner_iters, int outer_iters, double lambda_n, double lambda_a, 

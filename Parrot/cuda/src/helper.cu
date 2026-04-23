@@ -214,6 +214,45 @@ __global__ void fuse_cost_terms_kernel(const double* buffer2,
     }
 }
 
+__global__ void update_s_kernel(double* s,
+                                const double* s_old,
+                                const double* cost,
+                                const double* a_row,
+                                const double* b_col,
+                                int n1,
+                                int n2,
+                                double epsilon,
+                                double* block_sums) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+
+    double local_sum = 0.0;
+    if (idx < total) {
+        const int i = static_cast<int>(idx % static_cast<size_t>(n1));
+        const int j = static_cast<int>(idx / static_cast<size_t>(n1));
+        const double new_value = 0.95 * exp((a_row[j] + b_col[i] - cost[idx]) / epsilon)
+                                 / static_cast<double>(n1 * n2)
+                                 + 0.05 * s_old[idx];
+        s[idx] = new_value;
+        local_sum = fabs(new_value - s_old[idx]);
+    }
+
+    __shared__ double partial[kBlockSize];
+    partial[threadIdx.x] = local_sum;
+    __syncthreads();
+
+    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            partial[threadIdx.x] += partial[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        block_sums[blockIdx.x] = partial[0];
+    }
+}
+
 } // namespace
 
 void l2_norm_inplace(std::vector<double>& rwr, size_t n, size_t d) {
@@ -579,6 +618,62 @@ void compute_cost_fused_2(sparse_matrix_t row_norm_adj1,
               << " ms" << std::endl;
 }
 
+double update_S_mat(std::vector<double>& S,
+                    const std::vector<double>& S_old,
+                    const std::vector<double>& Cost,
+                    const std::vector<double>& a_row,
+                    const std::vector<double>& b_col,
+                    int n1,
+                    int n2,
+                    double epsilon) {
+    const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    if (S.size() != matrix_size || S_old.size() != matrix_size || Cost.size() != matrix_size ||
+        a_row.size() != static_cast<size_t>(n2) || b_col.size() != static_cast<size_t>(n1)) {
+        throw std::runtime_error("update_S_mat size mismatch");
+    }
+    if (matrix_size == 0) {
+        return 0.0;
+    }
+
+    double* d_s = nullptr;
+    double* d_s_old = nullptr;
+    double* d_cost = nullptr;
+    double* d_a_row = nullptr;
+    double* d_b_col = nullptr;
+    double* d_block_sums = nullptr;
+
+    const unsigned int blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+    std::vector<double> h_block_sums(blocks, 0.0);
+
+    CHECK_CUDA(cudaMalloc(&d_s, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_s_old, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_cost, matrix_size * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_a_row, static_cast<size_t>(n2) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_b_col, static_cast<size_t>(n1) * sizeof(double)));
+    CHECK_CUDA(cudaMalloc(&d_block_sums, blocks * sizeof(double)));
+
+    CHECK_CUDA(cudaMemcpy(d_s, S.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_s_old, S_old.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_cost, Cost.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_a_row, a_row.data(), static_cast<size_t>(n2) * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_b_col, b_col.data(), static_cast<size_t>(n1) * sizeof(double), cudaMemcpyHostToDevice));
+
+    update_s_kernel<<<blocks, kBlockSize>>>(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, epsilon, d_block_sums);
+    CHECK_CUDA(cudaGetLastError());
+
+    CHECK_CUDA(cudaMemcpy(S.data(), d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_block_sums.data(), d_block_sums, blocks * sizeof(double), cudaMemcpyDeviceToHost));
+
+    CHECK_CUDA(cudaFree(d_block_sums));
+    CHECK_CUDA(cudaFree(d_b_col));
+    CHECK_CUDA(cudaFree(d_a_row));
+    CHECK_CUDA(cudaFree(d_cost));
+    CHECK_CUDA(cudaFree(d_s_old));
+    CHECK_CUDA(cudaFree(d_s));
+
+    return std::accumulate(h_block_sums.begin(), h_block_sums.end(), 0.0);
+}
+
 sparse_matrix_t row_normalize_graph(sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
     std::vector<double> all_ones(n, 1.0);
     std::vector<double> graph_row_sum(n, 0.0);
@@ -777,6 +872,7 @@ sparse_matrix_t row_normalize_graph(sparse_matrix_t graph, int n, MKL_INT avg_nn
     return graph_norm_csr;
 }
 
+#define PARROT_CUDA_NATIVE_UPDATE_S_MAT
 #define PARROT_CUDA_NATIVE_COMPUTE_COST_FUSED_2
 #define PARROT_CUDA_NATIVE_HELPERS
 #include "../../src/helper.cpp"
