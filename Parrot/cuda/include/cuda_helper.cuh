@@ -24,6 +24,17 @@
 
 using MKL_INT = int;
 
+#ifdef DEBUG
+#define DEBUG_ONLY(stmt) \
+    do {                 \
+        stmt;            \
+    } while (0)
+#else
+#define DEBUG_ONLY(stmt) \
+    do {                 \
+    } while (0)
+#endif
+
 #define CHECK_CUDA(call)                                                         \
     do {                                                                         \
         cudaError_t status_ = (call);                                            \

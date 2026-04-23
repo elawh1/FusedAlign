@@ -177,7 +177,10 @@ int main(int argc, char* argv[]){
     auto time_12 = std::chrono::high_resolution_clock::now();
     phase_timings.push_back({"optimization", std::chrono::duration_cast<milliseconds>(time_12 - optimization_start).count()});
     DEBUG_ONLY(std::cout << "con_prox_pt_opt completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_12-optimization_start).count() << " ms" << std::endl);
-    long long total_algorithm_ms = std::chrono::duration_cast<milliseconds>(time_12 - time_0).count();
+    long long total_algorithm_ms = 0;
+    for (const auto& phase : phase_timings) {
+        total_algorithm_ms += phase.second;
+    }
     std::cout << "algorithm completed in " << total_algorithm_ms  << " ms" << std::endl;
     std::cout << "phase timings:" << std::endl;
     for (const auto& phase : phase_timings) {

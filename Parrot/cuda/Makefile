@@ -4,6 +4,10 @@ NVCCFLAGS = -O3 -std=c++17 -rdc=true -Iinclude \
     -I/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/include \
     -I$(CUSPARSELT_DIR)/include
 
+ifeq ($(DEBUG),1)
+NVCCFLAGS += -DDEBUG
+endif
+
 CUDA_TARGET = parrot_cuda
 CUDA_SRC = src/parrot_cuda.cu src/randomwalk.cu src/sddmm.cu \
            src/helper.cu src/helper2.cu src/accuracy.cu

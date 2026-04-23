@@ -6,6 +6,7 @@
 #include <fstream>
 #include <ctime> 
 #include <chrono>
+#include <utility>
 #include "accuracy.h"
 #include "cuda_helper.cuh"
 
@@ -17,6 +18,8 @@ int main(int argc, char* argv[]){
     int inner_iters = 5;
     int outer_iters = 10;
     bool sparsify = false;
+    using milliseconds = std::chrono::milliseconds;
+    std::vector<std::pair<std::string, long long>> phase_timings;
     
     if (argc < 3) {
         printf("provide input directory and sparsifying option \n");
@@ -27,7 +30,7 @@ int main(int argc, char* argv[]){
         sparsify = std::stoi(argv[2]);
     }
     load_config(data_path, g1_num_nodes, g2_num_nodes, use_attr, directed, inner_iters, outer_iters);
-    printf("graph1 #nodes %d -- graph2 #nodes %d -- directed %d -- use node attributes %d\n\n", g1_num_nodes, g2_num_nodes, directed, use_attr);
+    DEBUG_ONLY(printf("graph1 #nodes %d -- graph2 #nodes %d -- directed %d -- use node attributes %d\n\n", g1_num_nodes, g2_num_nodes, directed, use_attr));
 
     CudaCsrMatrix graph1_py;
     CudaCsrMatrix graph2_py;
@@ -56,18 +59,19 @@ int main(int argc, char* argv[]){
     if(use_attr) {
         g1_feat = readFileToVector(data_path + "/graph1_feat.txt", directed);
         g2_feat = readFileToVector(data_path + "/graph2_feat.txt", directed);
-        printf("g1_feat size %ld  g2_feat size %ld\n", g1_feat.size(), g2_feat.size());
+        DEBUG_ONLY(printf("g1_feat size %ld  g2_feat size %ld\n", g1_feat.size(), g2_feat.size()));
     }
     int l = anchor_pairs.first.size();
-    printf("graph1 #nodes %d -- graph2 #nodes %d -- avg nnz1/n1 %d -- avg nnz2/n2  %d -- use node attributes %d --- # of anchor links(l) %ld\n\n", 
-    g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, use_attr, anchor_pairs.first.size());
+    DEBUG_ONLY(printf("graph1 #nodes %d -- graph2 #nodes %d -- avg nnz1/n1 %d -- avg nnz2/n2  %d -- use node attributes %d --- # of anchor links(l) %ld\n\n",
+        g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, use_attr, anchor_pairs.first.size()));
 
     auto time_0 = std::chrono::high_resolution_clock::now();
     //normalize graph adjacencies
     CudaCsrMatrix graph1_row_normalized = row_normalize_graph_cuda(graph1_py, avg_nnz1_per_n1);
     CudaCsrMatrix graph2_row_normalized = row_normalize_graph_cuda(graph2_py, avg_nnz2_per_n2);
     auto time_1 = std::chrono::high_resolution_clock::now();
-    std::cout << "row normalizing graphs : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << " ms" << std::endl;
+    phase_timings.push_back({"row normalizing graphs", std::chrono::duration_cast<milliseconds>(time_1 - time_0).count()});
+    DEBUG_ONLY(std::cout << "row normalizing graphs : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() << " ms" << std::endl);
 
     //Free graphs - we will use normalized graph from now on
     destroy_cuda_csr(graph1_py);
@@ -85,19 +89,24 @@ int main(int argc, char* argv[]){
     const size_t cross_size = static_cast<size_t>(g1_num_nodes) * static_cast<size_t>(g2_num_nodes);
 
     CHECK_CUDA(cudaMalloc(&d_g1_rwr, g1_rwr_size * sizeof(double)));
+    auto g1_rwr_start = std::chrono::high_resolution_clock::now();
     get_batch_rwr_scores_cusparse_device(graph1_row_normalized, anchor_pairs.first, g1_num_nodes, 0.15, 100, d_g1_rwr);
     auto time_2 = std::chrono::high_resolution_clock::now();
-    std::cout << "graph1 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << " ms" << std::endl;
+    phase_timings.push_back({"graph1 RWR", std::chrono::duration_cast<milliseconds>(time_2 - g1_rwr_start).count()});
+    DEBUG_ONLY(std::cout << "graph1 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-g1_rwr_start).count() << " ms" << std::endl);
     CHECK_CUDA(cudaMalloc(&d_g2_rwr, g2_rwr_size * sizeof(double)));
+    auto g2_rwr_start = std::chrono::high_resolution_clock::now();
     get_batch_rwr_scores_cusparse_device(graph2_row_normalized, anchor_pairs.second, g2_num_nodes, 0.15, 100, d_g2_rwr);
     auto time_3 = std::chrono::high_resolution_clock::now();
-    std::cout << "graph2 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << " ms" << std::endl;
+    phase_timings.push_back({"graph2 RWR", std::chrono::duration_cast<milliseconds>(time_3 - g2_rwr_start).count()});
+    DEBUG_ONLY(std::cout << "graph2 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-g2_rwr_start).count() << " ms" << std::endl);
 
     //row normalize rwr for both graphs
     l2_norm_inplace_device(d_g1_rwr, g1_num_nodes, l);
     l2_norm_inplace_device(d_g2_rwr, g2_num_nodes, l);
 
     CHECK_CUDA(cudaMalloc(&d_cross_rwr_dist, cross_size * sizeof(double)));
+    auto cross_rwr_start = std::chrono::high_resolution_clock::now();
     get_normalized_neg_exp_dist_device(d_g1_rwr, d_g2_rwr, g1_num_nodes, g2_num_nodes, l, d_cross_rwr_dist);
     if (use_attr) {
         const size_t g1_feat_dim = g1_feat.size() / static_cast<size_t>(g1_num_nodes);
@@ -131,20 +140,24 @@ int main(int argc, char* argv[]){
     //make the anchor links cross rwr dist zero
     anchor_cost_zero_device(d_cross_rwr_dist, g1_num_nodes, g2_num_nodes, anchor_pairs, 0.0);
     auto time_4 = std::chrono::high_resolution_clock::now();
-    std::cout << "cross_rwr_dist computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << " ms" << std::endl;
+    phase_timings.push_back({"cross RWR distance", std::chrono::duration_cast<milliseconds>(time_4 - cross_rwr_start).count()});
+    DEBUG_ONLY(std::cout << "cross_rwr_dist computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-cross_rwr_start).count() << " ms" << std::endl);
 
-    auto time_7 = std::chrono::high_resolution_clock::now();
     CudaCsrMatrix intra_rwr1_masked_sddmm;
+    auto time_7 = std::chrono::high_resolution_clock::now();
     if (use_attr) intra_rwr1_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g1_feat, graph1_row_normalized, g1_num_nodes, static_cast<int>(g1_feat.size() / static_cast<size_t>(g1_num_nodes)));
     else intra_rwr1_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g1_rwr, graph1_row_normalized, g1_num_nodes, l);
     auto time_8 = std::chrono::high_resolution_clock::now();
-    std::cout << "g1 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_8-time_7).count() << " ms" << std::endl;
+    phase_timings.push_back({"graph1 intra distance", std::chrono::duration_cast<milliseconds>(time_8 - time_7).count()});
+    DEBUG_ONLY(std::cout << "g1 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_8-time_7).count() << " ms" << std::endl);
 
     CudaCsrMatrix intra_rwr2_masked_sddmm;
+    auto g2_intra_start = std::chrono::high_resolution_clock::now();
     if (use_attr) intra_rwr2_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g2_feat, graph2_row_normalized, g2_num_nodes, static_cast<int>(g2_feat.size() / static_cast<size_t>(g2_num_nodes)));
     else intra_rwr2_masked_sddmm = masked_sddmm_intra_cost_cusparse_device(d_g2_rwr, graph2_row_normalized, g2_num_nodes, l);
     auto time_9 = std::chrono::high_resolution_clock::now();
-    std::cout << "g2 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_9-time_8).count()  << " ms" << std::endl;
+    phase_timings.push_back({"graph2 intra distance", std::chrono::duration_cast<milliseconds>(time_9 - g2_intra_start).count()});
+    DEBUG_ONLY(std::cout << "g2 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_9-g2_intra_start).count() << " ms" << std::endl);
 
     //Free some memory 
     g1_feat.clear(); g1_feat.shrink_to_fit();
@@ -159,20 +172,31 @@ int main(int argc, char* argv[]){
     d_g2_feat = nullptr;
 
     //Compute cross_dist
-    auto time_10 = std::chrono::high_resolution_clock::now();
     CHECK_CUDA(cudaMalloc(&d_cross_dist, cross_size * sizeof(double)));
+    auto time_10 = std::chrono::high_resolution_clock::now();
     get_product_rwr_mat_cusparse_device(graph1_row_normalized, graph2_row_normalized, d_cross_rwr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75, d_cross_dist);
+    auto time_11 = std::chrono::high_resolution_clock::now();
+    phase_timings.push_back({"cross distance propagation", std::chrono::duration_cast<milliseconds>(time_11 - time_10).count()});
+    DEBUG_ONLY(std::cout << "cross_dist computation completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_11-time_10).count() << " ms" << std::endl);
     CHECK_CUDA(cudaFree(d_cross_rwr_dist));
     d_cross_rwr_dist = nullptr;
-    auto time_11 = std::chrono::high_resolution_clock::now();
-    std::cout << "cross_dist computation completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_11-time_10).count()   << " ms" << std::endl;
+    auto optimization_start = std::chrono::high_resolution_clock::now();
     std::vector<double> S = con_prox_pt_opt_device(graph1_row_normalized, graph2_row_normalized, g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, d_cross_dist, intra_rwr1_masked_sddmm, 
         intra_rwr2_masked_sddmm, inner_iters, outer_iters, 5e-3, 5e-4, 5e-4, 1e-5, anchor_pairs, sparsify);
+    auto time_12 = std::chrono::high_resolution_clock::now();
+    phase_timings.push_back({"optimization", std::chrono::duration_cast<milliseconds>(time_12 - optimization_start).count()});
+    DEBUG_ONLY(std::cout << "con_prox_pt_opt completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_12-optimization_start).count() << " ms" << std::endl);
     CHECK_CUDA(cudaFree(d_cross_dist));
     d_cross_dist = nullptr;
-    auto time_12 = std::chrono::high_resolution_clock::now();
-    std::cout << "con_prox_pt_opt completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_12-time_11).count() << " ms" << std::endl;
-    std::cout << "algorithm completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_12-time_0).count()  << " ms" << std::endl;
+    long long total_algorithm_ms = 0;
+    for (const auto& phase : phase_timings) {
+        total_algorithm_ms += phase.second;
+    }
+    std::cout << "algorithm completed in " << total_algorithm_ms << " ms" << std::endl;
+    std::cout << "phase timings:" << std::endl;
+    for (const auto& phase : phase_timings) {
+        std::cout << "  " << phase.first << ": " << phase.second << " ms" << std::endl;
+    }
 
     std::unordered_map<int, double>  hits = hits_ks_mean_scores( S, g1_num_nodes, g2_num_nodes, anchor_pairs_test, std::vector<int>{1, 10, 30, 50});
 

@@ -797,9 +797,9 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     std::vector<double> S(matrix_size, 1.0 / static_cast<double>(matrix_size));
     std::vector<double> H_log = init_Hlog_with_anchors(n1, n2, anchor_pairs);
     const auto time_1 = std::chrono::high_resolution_clock::now();
-    std::cout << "initialization in optimization : "
-              << std::chrono::duration_cast<std::chrono::milliseconds>(time_1 - time_0).count()
-              << " ms" << std::endl;
+    DEBUG_ONLY(std::cout << "initialization in optimization : "
+                         << std::chrono::duration_cast<std::chrono::milliseconds>(time_1 - time_0).count()
+                         << " ms" << std::endl);
 
     CusparseHandle sp_handle;
     CublasHandle blas_handle;
@@ -855,9 +855,9 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     CHECK_CUDA(cudaFree(d_row_avg_square_dist1));
 
     const auto time_2 = std::chrono::high_resolution_clock::now();
-    std::cout << "L_fixed computation in optimization : "
-              << std::chrono::duration_cast<std::chrono::milliseconds>(time_2 - time_1).count()
-              << " ms" << std::endl << std::endl;
+    DEBUG_ONLY(std::cout << "L_fixed computation in optimization : "
+                         << std::chrono::duration_cast<std::chrono::milliseconds>(time_2 - time_1).count()
+                         << " ms" << std::endl << std::endl);
 
     bool has_cost_old = false;
     double c_compute_time = 0.0;
@@ -866,7 +866,7 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     double update_s_time = 0.0;
 
     for (int it = 0; it < outer_iters; ++it) {
-        printf("----- outer iterration %d ----\n", it);
+        DEBUG_ONLY(printf("----- outer iterration %d ----\n", it));
         CHECK_CUDA(cudaMemcpy(d_s_old, d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
 
         const auto time_l_done = std::chrono::high_resolution_clock::now();
@@ -902,7 +902,7 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
         const double diff_s = update_s_device(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, lambda_total);
         const auto time_iter_3 = std::chrono::high_resolution_clock::now();
         update_s_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_3 - time_iter_2).count();
-        printf("inner iter %d and diff of S %.6f\n\n", it, diff_s);
+        DEBUG_ONLY(printf("inner iter %d and diff of S %.6f\n\n", it, diff_s));
     }
 
     CHECK_CUDA(cudaMemcpy(S.data(), d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToHost));
@@ -920,15 +920,15 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     destroy_cuda_csr(d_row_norm_adj1_tr);
 
     const auto time_4 = std::chrono::high_resolution_clock::now();
-    std::cout << "total time of 10 outer iterations : "
-              << std::chrono::duration_cast<std::chrono::milliseconds>(time_4 - time_2).count()
-              << " ms" << std::endl;
-    std::cout << " C_compute_time : " << c_compute_time
-              << " Cost_compute_time : " << cost_compute_time
-              << " inner loop : " << inner_loop
-              << " update_S : " << update_s_time
-              << " ms" << std::endl;
-    std::cout << "done con_prox_pt_opt_init" << std::endl;
+    DEBUG_ONLY(std::cout << "total time of 10 outer iterations : "
+                         << std::chrono::duration_cast<std::chrono::milliseconds>(time_4 - time_2).count()
+                         << " ms" << std::endl);
+    DEBUG_ONLY(std::cout << " C_compute_time : " << c_compute_time
+                         << " Cost_compute_time : " << cost_compute_time
+                         << " inner loop : " << inner_loop
+                         << " update_S : " << update_s_time
+                         << " ms" << std::endl);
+    DEBUG_ONLY(std::cout << "done con_prox_pt_opt_init" << std::endl);
     return S;
 }
 
@@ -956,10 +956,10 @@ CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_p
             isolated.push_back(i);
         }
     }
-    printf("ang nnz %d num of isolated %ld\n", avg_nnz_per_n, isolated.size());
+    DEBUG_ONLY(printf("ang nnz %d num of isolated %ld\n", avg_nnz_per_n, isolated.size()));
 
     if (!isolated.empty()) {
-        printf("connecting isolated nodes\n");
+        DEBUG_ONLY(printf("connecting isolated nodes\n"));
         std::vector<std::vector<int>> add_cols_per_row(static_cast<size_t>(n));
         std::srand(std::time(0));
         for (MKL_INT i : isolated) {
@@ -977,7 +977,7 @@ CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_p
         for (const auto& cols_added : add_cols_per_row) {
             added_edges += cols_added.size();
         }
-        printf("edge_list size %d \n", static_cast<int>(added_edges * 2));
+        DEBUG_ONLY(printf("edge_list size %d \n", static_cast<int>(added_edges * 2)));
 
         std::vector<int> merged_row_offsets(n + 1, 0);
         for (int row = 0; row < n; ++row) {
@@ -1033,7 +1033,7 @@ CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_p
         graph_row_sum[row] = sum;
     }
     for (int i = 0; i < static_cast<int>(graph_row_sum.size()); ++i) {
-        if (graph_row_sum[i] < 1e-10) printf("333 graph_row_sum[%d] is zero \n", i);
+        if (graph_row_sum[i] < 1e-10) DEBUG_ONLY(printf("333 graph_row_sum[%d] is zero \n", i));
     }
 
     return make_cuda_csr_from_host_impl(rows, cols, h_row_offsets, h_col_ind, h_vals);
