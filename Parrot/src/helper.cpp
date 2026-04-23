@@ -1083,6 +1083,7 @@ void compute_cost_fused( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm
 }
 
 
+#ifndef PARROT_CUDA_NATIVE_COMPUTE_COST_FUSED_2
 void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, const std::vector<double>& S, int n1, int n2,  sparse_matrix_t intra_dist1, 
         sparse_matrix_t intra_dist2, const std::vector<double>& C_fixed, double lambda_e, double lambda_n, std::vector<double>& C) {
 
@@ -1125,6 +1126,7 @@ void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_no
     " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
     " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << " ms" << std::endl;
 }
+#endif
 
 
 double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, const std::vector<double>& Cost, const std::vector<double>& a_row, const std::vector<double>& b_col, int n1, int n2, double epsilon) {
