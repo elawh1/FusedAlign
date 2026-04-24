@@ -73,6 +73,8 @@ int main(int argc, char* argv[]){
     //normalize graph adjacencies
     CudaCsrMatrix graph1_row_normalized = row_normalize_graph_cuda(graph1_py, avg_nnz1_per_n1);
     CudaCsrMatrix graph2_row_normalized = row_normalize_graph_cuda(graph2_py, avg_nnz2_per_n2);
+    CudaCsrMatrix graph1_row_normalized_t = transpose_cuda_csr(graph1_row_normalized);
+    CudaCsrMatrix graph2_row_normalized_t = transpose_cuda_csr(graph2_row_normalized);
     auto time_1 = synced_now();
     phase_timings.push_back({"row normalizing graphs", std::chrono::duration_cast<milliseconds>(time_1 - time_0).count()});
     DEBUG_ONLY(std::cout << "row normalizing graphs : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() << " ms" << std::endl);
@@ -95,17 +97,19 @@ int main(int argc, char* argv[]){
 
     CHECK_CUDA(cudaMalloc(&d_g1_rwr, g1_rwr_size * sizeof(double)));
     auto g1_rwr_start = synced_now();
-    get_batch_rwr_scores_cusparse_device(graph1_row_normalized, anchor_pairs.first, g1_num_nodes, 0.15, 100, d_g1_rwr, rwr_context);
+    get_batch_rwr_scores_cusparse_device(graph1_row_normalized_t, anchor_pairs.first, g1_num_nodes, 0.15, 100, d_g1_rwr, rwr_context);
     auto time_2 = synced_now();
     phase_timings.push_back({"graph1 RWR", std::chrono::duration_cast<milliseconds>(time_2 - g1_rwr_start).count()});
     DEBUG_ONLY(std::cout << "graph1 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-g1_rwr_start).count() << " ms" << std::endl);
     CHECK_CUDA(cudaMalloc(&d_g2_rwr, g2_rwr_size * sizeof(double)));
     auto g2_rwr_start = synced_now();
-    get_batch_rwr_scores_cusparse_device(graph2_row_normalized, anchor_pairs.second, g2_num_nodes, 0.15, 100, d_g2_rwr, rwr_context);
+    get_batch_rwr_scores_cusparse_device(graph2_row_normalized_t, anchor_pairs.second, g2_num_nodes, 0.15, 100, d_g2_rwr, rwr_context);
     auto time_3 = synced_now();
     phase_timings.push_back({"graph2 RWR", std::chrono::duration_cast<milliseconds>(time_3 - g2_rwr_start).count()});
     DEBUG_ONLY(std::cout << "graph2 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-g2_rwr_start).count() << " ms" << std::endl);
     destroy_batch_rwr_context(rwr_context);
+    destroy_cuda_csr(graph2_row_normalized_t);
+    destroy_cuda_csr(graph1_row_normalized_t);
 
     //row normalize rwr for both graphs
     l2_norm_inplace_device(d_g1_rwr, g1_num_nodes, l);

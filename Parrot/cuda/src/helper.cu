@@ -494,9 +494,14 @@ double update_s_device(double* d_s,
     }
     update_s_kernel<<<blocks, kBlockSize>>>(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, epsilon, d_block_sums);
     CHECK_CUDA(cudaGetLastError());
+#ifdef DEBUG
     double diff_sum = 0.0;
     CHECK_CUBLAS(cublasDasum(blas_handle, static_cast<int>(blocks), d_block_sums, 1, &diff_sum));
     return diff_sum;
+#else
+    (void)blas_handle;
+    return 0.0;
+#endif
 }
 
 void run_sinkhorn_iterations_cuda_device(const double* d_cost,
@@ -878,16 +883,25 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     (void)avg_nnz2_per_n2;
     (void)sparsify;
 
-    const auto time_0 = std::chrono::high_resolution_clock::now();
+#ifdef DEBUG
+    using Clock = std::chrono::high_resolution_clock;
+    auto elapsed_ms = [](const Clock::time_point& start, const Clock::time_point& end) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    };
+    auto synced_now = []() {
+        CHECK_CUDA(cudaDeviceSynchronize());
+        return Clock::now();
+    };
+    const auto debug_time_0 = synced_now();
+#endif
     const double lambda_total = lambda_n + lambda_a + lambda_p;
     const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
     const double lambda_e = lambda_e_in * matrix_size;
     std::vector<double> S(matrix_size, 1.0 / static_cast<double>(matrix_size));
     std::vector<double> H_log = init_Hlog_with_anchors(n1, n2, anchor_pairs);
-    const auto time_1 = std::chrono::high_resolution_clock::now();
-    DEBUG_ONLY(std::cout << "initialization in optimization : "
-                         << std::chrono::duration_cast<std::chrono::milliseconds>(time_1 - time_0).count()
-                         << " ms" << std::endl);
+#ifdef DEBUG
+    const auto debug_time_1 = synced_now();
+#endif
 
     CusparseHandle sp_handle;
     CublasHandle blas_handle;
@@ -947,32 +961,43 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     CHECK_CUDA(cudaFree(d_row_avg_square_dist2));
     CHECK_CUDA(cudaFree(d_row_avg_square_dist1));
 
-    const auto time_2 = std::chrono::high_resolution_clock::now();
-    DEBUG_ONLY(std::cout << "L_fixed computation in optimization : "
-                         << std::chrono::duration_cast<std::chrono::milliseconds>(time_2 - time_1).count()
-                         << " ms" << std::endl << std::endl);
+#ifdef DEBUG
+    const auto debug_time_2 = synced_now();
+#endif
 
     ComputeCostContext compute_cost_context;
+#ifdef DEBUG
+    const auto debug_context_start = synced_now();
+#endif
     initialize_compute_cost_context(compute_cost_context, sp_handle.handle, d_row_norm_adj1_tr, row_norm_adj2,
                                     intra_dist1_sparse, intra_dist2_sparse, d_s, n1, n2, lambda_e,
                                     d_cost, d_buffer, d_buffer2);
+#ifdef DEBUG
+    const auto debug_context_end = synced_now();
+#endif
 
     bool has_cost_old = false;
-    double c_compute_time = 0.0;
-    double cost_compute_time = 0.0;
-    double inner_loop = 0.0;
-    double update_s_time = 0.0;
+#ifdef DEBUG
+    long long c_compute_time = 0;
+    long long cost_compute_time = 0;
+    long long inner_loop = 0;
+    long long update_s_time = 0;
+#endif
 
     for (int it = 0; it < outer_iters; ++it) {
         DEBUG_ONLY(printf("----- outer iterration %d ----\n", it));
         CHECK_CUDA(cudaMemcpy(d_s_old, d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
 
-        const auto time_l_done = std::chrono::high_resolution_clock::now();
+#ifdef DEBUG
+        const auto debug_compute_start = synced_now();
+#endif
         compute_cost_fused_2_cuda_device(sp_handle.handle, compute_cost_context, d_row_norm_adj1_tr, row_norm_adj2,
                                          intra_dist1_sparse, intra_dist2_sparse, d_c_fixed, lambda_n,
                                          d_cost, d_buffer, d_buffer2);
-        const auto time_c_done = std::chrono::high_resolution_clock::now();
-        c_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_c_done - time_l_done).count();
+#ifdef DEBUG
+        const auto debug_compute_end = synced_now();
+        c_compute_time += elapsed_ms(debug_compute_start, debug_compute_end);
+#endif
 
         if (!has_cost_old) {
             CHECK_CUDA(cudaMemcpy(d_cost_buff, d_cost, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
@@ -991,21 +1016,34 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
 
         apply_log_penalty_kernel<<<blocks_matrix, kBlockSize>>>(d_s, d_cost, matrix_size, lambda_p);
         CHECK_CUDA(cudaGetLastError());
-        const auto time_iter_1 = std::chrono::high_resolution_clock::now();
-        cost_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_1 - time_c_done).count();
+#ifdef DEBUG
+        const auto debug_penalty_end = synced_now();
+        cost_compute_time += elapsed_ms(debug_compute_end, debug_penalty_end);
+#endif
 
         run_sinkhorn_iterations_cuda_device(d_cost, n1, n2, inner_iters, lambda_total, d_a_row, d_b_col, d_cost_t, blas_handle.handle);
-        const auto time_iter_2 = std::chrono::high_resolution_clock::now();
-        inner_loop += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_2 - time_iter_1).count();
+#ifdef DEBUG
+        const auto debug_sinkhorn_end = synced_now();
+        inner_loop += elapsed_ms(debug_penalty_end, debug_sinkhorn_end);
+#endif
 
         const double diff_s = update_s_device(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, lambda_total,
                                               d_update_block_sums, blas_handle.handle);
-        const auto time_iter_3 = std::chrono::high_resolution_clock::now();
-        update_s_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_3 - time_iter_2).count();
+#ifdef DEBUG
+        const auto debug_update_end = synced_now();
+        update_s_time += elapsed_ms(debug_sinkhorn_end, debug_update_end);
+#endif
         DEBUG_ONLY(printf("inner iter %d and diff of S %.6f\n\n", it, diff_s));
     }
 
+#ifdef DEBUG
+    const auto debug_copy_start = synced_now();
+#endif
     CHECK_CUDA(cudaMemcpy(S.data(), d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToHost));
+#ifdef DEBUG
+    const auto debug_copy_end = synced_now();
+    const auto debug_cleanup_start = debug_copy_end;
+#endif
 
     destroy_compute_cost_context(compute_cost_context);
     if (d_update_block_sums != nullptr) CHECK_CUDA(cudaFree(d_update_block_sums));
@@ -1021,15 +1059,21 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     CHECK_CUDA(cudaFree(d_s));
     destroy_cuda_csr(d_row_norm_adj1_tr);
 
-    const auto time_4 = std::chrono::high_resolution_clock::now();
-    DEBUG_ONLY(std::cout << "total time of 10 outer iterations : "
-                         << std::chrono::duration_cast<std::chrono::milliseconds>(time_4 - time_2).count()
-                         << " ms" << std::endl);
-    DEBUG_ONLY(std::cout << " C_compute_time : " << c_compute_time
-                         << " Cost_compute_time : " << cost_compute_time
-                         << " inner loop : " << inner_loop
-                         << " update_S : " << update_s_time
-                         << " ms" << std::endl);
+#ifdef DEBUG
+    const auto debug_cleanup_end = synced_now();
+    DEBUG_ONLY(std::cout << "optimization breakdown:\n"
+                         << "  init/setup: " << elapsed_ms(debug_time_0, debug_time_1) << " ms\n"
+                         << "  fixed cost prep: " << elapsed_ms(debug_time_1, debug_time_2) << " ms\n"
+                         << "  compute-cost setup: " << elapsed_ms(debug_context_start, debug_context_end) << " ms\n"
+                         << "  compute cost loop: " << c_compute_time << " ms\n"
+                         << "  cost select + penalty: " << cost_compute_time << " ms\n"
+                         << "  sinkhorn: " << inner_loop << " ms\n"
+                         << "  update S: " << update_s_time << " ms\n"
+                         << "  final copy: " << elapsed_ms(debug_copy_start, debug_copy_end) << " ms\n"
+                         << "  cleanup: " << elapsed_ms(debug_cleanup_start, debug_cleanup_end) << " ms\n"
+                         << "  total inside optimization: " << elapsed_ms(debug_time_0, debug_cleanup_end) << " ms"
+                         << std::endl);
+#endif
     DEBUG_ONLY(std::cout << "done con_prox_pt_opt_init" << std::endl);
     return S;
 }

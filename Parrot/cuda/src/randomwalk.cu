@@ -200,7 +200,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
 #endif
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(
         context.cusparse,
-        CUSPARSE_OPERATION_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
         CUSPARSE_OPERATION_NON_TRANSPOSE,
         &alpha,
         context.mat_a,
@@ -217,7 +217,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     ensure_batch_rwr_workspace(context, bufferSize);
     CHECK_CUSPARSE(cusparseSpMM_preprocess(
         context.cusparse,
-        CUSPARSE_OPERATION_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
         CUSPARSE_OPERATION_NON_TRANSPOSE,
         &alpha,
         context.mat_a,
@@ -232,11 +232,17 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const auto preprocess_end = Clock::now();
 
     const auto iter_loop_start = Clock::now();
+    long long iter_spmm_time = 0;
+    long long iter_add_time = 0;
+    long long iter_swap_time = 0;
 #endif
     for(int i=0; i < max_iters-1; i++) {
+#ifdef DEBUG
+        const auto spmm_start = Clock::now();
+#endif
         CHECK_CUSPARSE(cusparseSpMM(
             context.cusparse,
-            CUSPARSE_OPERATION_TRANSPOSE,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
             context.mat_a,
@@ -248,6 +254,13 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
             context.d_buffer));
 
         double one = 1.0;
+#ifdef DEBUG
+        CHECK_CUDA(cudaDeviceSynchronize());
+        const auto spmm_end = Clock::now();
+        iter_spmm_time += elapsed_ms(spmm_start, spmm_end);
+
+        const auto add_start = spmm_end;
+#endif
         CHECK_CUBLAS(cublasDaxpy(
             context.cublas,
             n * l,
@@ -257,9 +270,20 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
             context.d_xnext,
             1));
 
+#ifdef DEBUG
+        CHECK_CUDA(cudaDeviceSynchronize());
+        const auto add_end = Clock::now();
+        iter_add_time += elapsed_ms(add_start, add_end);
+
+        const auto swap_start = add_end;
+#endif
         std::swap(context.d_x, context.d_xnext);
         CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_x, context.d_x));
         CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_xnext, context.d_xnext));
+#ifdef DEBUG
+        const auto swap_end = Clock::now();
+        iter_swap_time += elapsed_ms(swap_start, swap_end);
+#endif
 
     }
 #ifdef DEBUG
@@ -287,6 +311,9 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         << "  spmm preprocess: " << elapsed_ms(preprocess_start, preprocess_end) << " ms"
         << " [workspace=" << (reused_workspace ? "reused" : "resized") << ", bytes=" << bufferSize << "]\n"
         << "  iteration loop: " << elapsed_ms(iter_loop_start, iter_loop_end) << " ms\n"
+        << "    spmm: " << iter_spmm_time << " ms\n"
+        << "    add E: " << iter_add_time << " ms\n"
+        << "    swap/rebind: " << iter_swap_time << " ms\n"
         << "  output copy: " << elapsed_ms(output_copy_start, output_copy_end) << " ms\n"
         << "  total inside function: " << elapsed_ms(seed_build_start, output_copy_end) << " ms"
         << std::endl);
