@@ -84,10 +84,27 @@ struct CudaCsrMatrix {
     cusparseSpMatDescr_t descr = nullptr;
 };
 
+struct BatchRwrContext {
+    cusparseHandle_t cusparse = nullptr;
+    cublasHandle_t cublas = nullptr;
+    cusparseSpMatDescr_t mat_a = nullptr;
+    cusparseDnMatDescr_t mat_x = nullptr;
+    cusparseDnMatDescr_t mat_xnext = nullptr;
+    double* d_x = nullptr;
+    double* d_xnext = nullptr;
+    double* d_e = nullptr;
+    void* d_buffer = nullptr;
+    size_t dense_capacity = 0;
+    size_t buffer_capacity = 0;
+    int current_n = 0;
+    int current_l = 0;
+};
+
 void destroy_cuda_csr(CudaCsrMatrix& matrix);
 CudaCsrMatrix make_cuda_csr_from_edgelist(const std::vector<double>& edgelist, int m, int n);
 CudaCsrMatrix transpose_cuda_csr(const CudaCsrMatrix& matrix);
 CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_per_n);
+void destroy_batch_rwr_context(BatchRwrContext& context);
 
 void load_config(const std::string& data_path, int& g1_num_nodes, int& g2_num_nodes,
                  bool& use_attr, bool& directed, int& inner_iters, int& outer_iters);
@@ -99,6 +116,9 @@ std::vector<double> init_Hlog_with_anchors(int nrows, int ncols,
 void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors,
                                           int n, float restart_prob, int max_iters,
                                           double* d_X_out);
+void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors,
+                                          int n, float restart_prob, int max_iters,
+                                          double* d_X_out, BatchRwrContext& context);
 void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                                          const CudaCsrMatrix& graph2_normalized,
                                          const double* d_in_cross_dist,

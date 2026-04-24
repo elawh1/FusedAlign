@@ -30,14 +30,6 @@ __global__ void compute_row_inv_l2_norms_kernel(const double* matrix, size_t n, 
     }
 }
 
-void transpose_host_csr(int rows,
-                        int cols,
-                        const std::vector<int>& row_offsets,
-                        const std::vector<int>& col_ind,
-                        const std::vector<double>& vals,
-                        std::vector<int>& out_row_offsets,
-                        std::vector<int>& out_col_ind,
-                        std::vector<double>& out_vals);
 CudaCsrMatrix make_cuda_csr_from_host_impl(int rows,
                                            int cols,
                                            const std::vector<int>& h_row_offsets,
@@ -144,36 +136,6 @@ struct CusparseHandle {
     }
 };
 
-void transpose_host_csr(int rows,
-                        int cols,
-                        const std::vector<int>& row_offsets,
-                        const std::vector<int>& col_ind,
-                        const std::vector<double>& vals,
-                        std::vector<int>& out_row_offsets,
-                        std::vector<int>& out_col_ind,
-                        std::vector<double>& out_vals) {
-    out_row_offsets.assign(cols + 1, 0);
-    out_col_ind.resize(vals.size());
-    out_vals.resize(vals.size());
-
-    for (int idx = 0; idx < static_cast<int>(col_ind.size()); ++idx) {
-        out_row_offsets[col_ind[idx] + 1]++;
-    }
-    for (int i = 0; i < cols; ++i) {
-        out_row_offsets[i + 1] += out_row_offsets[i];
-    }
-
-    std::vector<int> cursor = out_row_offsets;
-    for (int row = 0; row < rows; ++row) {
-        for (int idx = row_offsets[row]; idx < row_offsets[row + 1]; ++idx) {
-            const int col = col_ind[idx];
-            const int out_idx = cursor[col]++;
-            out_col_ind[out_idx] = row;
-            out_vals[out_idx] = vals[idx];
-        }
-    }
-}
-
 CudaCsrMatrix make_cuda_csr_from_host_impl(int rows,
                                            int cols,
                                            const std::vector<int>& h_row_offsets,
@@ -217,15 +179,72 @@ void copy_cuda_csr_to_host(const CudaCsrMatrix& matrix,
 }
 
 CudaCsrMatrix transpose_cuda_csr_impl(const CudaCsrMatrix& matrix) {
-    std::vector<int> h_row_offsets;
-    std::vector<int> h_col_ind;
-    std::vector<double> h_vals;
-    copy_cuda_csr_to_host(matrix, h_row_offsets, h_col_ind, h_vals);
-    std::vector<int> h_row_offsets_t;
-    std::vector<int> h_col_ind_t;
-    std::vector<double> h_vals_t;
-    transpose_host_csr(matrix.rows, matrix.cols, h_row_offsets, h_col_ind, h_vals, h_row_offsets_t, h_col_ind_t, h_vals_t);
-    return make_cuda_csr_from_host_impl(matrix.cols, matrix.rows, h_row_offsets_t, h_col_ind_t, h_vals_t);
+    CusparseHandle handle;
+    CudaCsrMatrix result;
+    result.rows = matrix.cols;
+    result.cols = matrix.rows;
+    result.nnz = matrix.nnz;
+
+    CHECK_CUDA(cudaMalloc(&result.d_row_offsets, (static_cast<size_t>(result.rows) + 1) * sizeof(int)));
+    CHECK_CUDA(cudaMalloc(&result.d_col_ind, static_cast<size_t>(result.nnz) * sizeof(int)));
+    CHECK_CUDA(cudaMalloc(&result.d_vals, static_cast<size_t>(result.nnz) * sizeof(double)));
+
+    size_t workspace_size = 0;
+    void* d_workspace = nullptr;
+    CHECK_CUSPARSE(cusparseCsr2cscEx2_bufferSize(
+        handle.handle,
+        matrix.rows,
+        matrix.cols,
+        matrix.nnz,
+        matrix.d_vals,
+        matrix.d_row_offsets,
+        matrix.d_col_ind,
+        result.d_vals,
+        result.d_row_offsets,
+        result.d_col_ind,
+        CUDA_R_64F,
+        CUSPARSE_ACTION_NUMERIC,
+        CUSPARSE_INDEX_BASE_ZERO,
+        CUSPARSE_CSR2CSC_ALG1,
+        &workspace_size));
+
+    if (workspace_size > 0) {
+        CHECK_CUDA(cudaMalloc(&d_workspace, workspace_size));
+    }
+
+    CHECK_CUSPARSE(cusparseCsr2cscEx2(
+        handle.handle,
+        matrix.rows,
+        matrix.cols,
+        matrix.nnz,
+        matrix.d_vals,
+        matrix.d_row_offsets,
+        matrix.d_col_ind,
+        result.d_vals,
+        result.d_row_offsets,
+        result.d_col_ind,
+        CUDA_R_64F,
+        CUSPARSE_ACTION_NUMERIC,
+        CUSPARSE_INDEX_BASE_ZERO,
+        CUSPARSE_CSR2CSC_ALG1,
+        d_workspace));
+
+    if (d_workspace != nullptr) {
+        CHECK_CUDA(cudaFree(d_workspace));
+    }
+
+    CHECK_CUSPARSE(cusparseCreateCsr(&result.descr,
+                                     result.rows,
+                                     result.cols,
+                                     result.nnz,
+                                     result.d_row_offsets,
+                                     result.d_col_ind,
+                                     result.d_vals,
+                                     CUSPARSE_INDEX_32I,
+                                     CUSPARSE_INDEX_32I,
+                                     CUSPARSE_INDEX_BASE_ZERO,
+                                     CUDA_R_64F));
+    return result;
 }
 
 }  // namespace
@@ -465,19 +484,19 @@ double update_s_device(double* d_s,
                        const double* d_b_col,
                        int n1,
                        int n2,
-                       double epsilon) {
+                       double epsilon,
+                       double* d_block_sums,
+                       cublasHandle_t blas_handle) {
     const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
     const unsigned int blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
-    double* d_block_sums = nullptr;
-    std::vector<double> h_block_sums(blocks, 0.0);
-
-    CHECK_CUDA(cudaMalloc(&d_block_sums, blocks * sizeof(double)));
+    if (blocks == 0) {
+        return 0.0;
+    }
     update_s_kernel<<<blocks, kBlockSize>>>(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, epsilon, d_block_sums);
     CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaMemcpy(h_block_sums.data(), d_block_sums, blocks * sizeof(double), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaFree(d_block_sums));
-
-    return std::accumulate(h_block_sums.begin(), h_block_sums.end(), 0.0);
+    double diff_sum = 0.0;
+    CHECK_CUBLAS(cublasDasum(blas_handle, static_cast<int>(blocks), d_block_sums, 1, &diff_sum));
+    return diff_sum;
 }
 
 void run_sinkhorn_iterations_cuda_device(const double* d_cost,
@@ -502,90 +521,159 @@ void run_sinkhorn_iterations_cuda_device(const double* d_cost,
     }
 }
 
-void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
-                                      const CudaCsrMatrix& d_row_norm_adj1,
-                                      const CudaCsrMatrix& d_row_norm_adj2,
-                                      const CudaCsrMatrix& d_intra_dist1,
-                                      const CudaCsrMatrix& d_intra_dist2,
-                                      const double* d_s,
-                                      int n1,
-                                      int n2,
-                                      const double* d_c_fixed,
-                                      double lambda_e,
-                                      double lambda_n,
-                                      double* d_cost,
-                                      double* d_buffer,
-                                      double* d_buffer2) {
+struct ComputeCostContext {
     cusparseDnMatDescr_t s_row_major = nullptr;
     cusparseDnMatDescr_t cost_row_major = nullptr;
     cusparseDnMatDescr_t cost_col_major = nullptr;
     cusparseDnMatDescr_t buffer_col_major = nullptr;
     cusparseDnMatDescr_t buffer2_col_major = nullptr;
-
-    CHECK_CUSPARSE(cusparseCreateDnMat(&s_row_major, n2, n1, n1, const_cast<double*>(d_s), CUDA_R_64F, CUSPARSE_ORDER_ROW));
-    CHECK_CUSPARSE(cusparseCreateDnMat(&cost_row_major, n2, n1, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_ROW));
-    CHECK_CUSPARSE(cusparseCreateDnMat(&cost_col_major, n1, n2, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_COL));
-    CHECK_CUSPARSE(cusparseCreateDnMat(&buffer_col_major, n1, n2, n1, d_buffer, CUDA_R_64F, CUSPARSE_ORDER_COL));
-    CHECK_CUSPARSE(cusparseCreateDnMat(&buffer2_col_major, n1, n2, n1, d_buffer2, CUDA_R_64F, CUSPARSE_ORDER_COL));
-
-    size_t workspace_1 = 0, workspace_2 = 0, workspace_3 = 0, workspace_4 = 0;
     void* d_workspace_1 = nullptr;
     void* d_workspace_2 = nullptr;
     void* d_workspace_3 = nullptr;
     void* d_workspace_4 = nullptr;
+    double alpha_neg2_lambda_e = 0.0;
+    size_t matrix_size = 0;
+};
 
+void destroy_compute_cost_context(ComputeCostContext& context) {
+    if (context.d_workspace_4 != nullptr) {
+        CHECK_CUDA(cudaFree(context.d_workspace_4));
+        context.d_workspace_4 = nullptr;
+    }
+    if (context.d_workspace_3 != nullptr) {
+        CHECK_CUDA(cudaFree(context.d_workspace_3));
+        context.d_workspace_3 = nullptr;
+    }
+    if (context.d_workspace_2 != nullptr) {
+        CHECK_CUDA(cudaFree(context.d_workspace_2));
+        context.d_workspace_2 = nullptr;
+    }
+    if (context.d_workspace_1 != nullptr) {
+        CHECK_CUDA(cudaFree(context.d_workspace_1));
+        context.d_workspace_1 = nullptr;
+    }
+    if (context.buffer2_col_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.buffer2_col_major));
+        context.buffer2_col_major = nullptr;
+    }
+    if (context.buffer_col_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.buffer_col_major));
+        context.buffer_col_major = nullptr;
+    }
+    if (context.cost_col_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.cost_col_major));
+        context.cost_col_major = nullptr;
+    }
+    if (context.cost_row_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.cost_row_major));
+        context.cost_row_major = nullptr;
+    }
+    if (context.s_row_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.s_row_major));
+        context.s_row_major = nullptr;
+    }
+    context.alpha_neg2_lambda_e = 0.0;
+    context.matrix_size = 0;
+}
+
+void initialize_compute_cost_context(ComputeCostContext& context,
+                                     cusparseHandle_t sp_handle,
+                                     const CudaCsrMatrix& d_row_norm_adj1,
+                                     const CudaCsrMatrix& d_row_norm_adj2,
+                                     const CudaCsrMatrix& d_intra_dist1,
+                                     const CudaCsrMatrix& d_intra_dist2,
+                                     const double* d_s,
+                                     int n1,
+                                     int n2,
+                                     double lambda_e,
+                                     double* d_cost,
+                                     double* d_buffer,
+                                     double* d_buffer2) {
+    destroy_compute_cost_context(context);
+    context.alpha_neg2_lambda_e = -2.0 * lambda_e;
+    context.matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+
+    CHECK_CUSPARSE(cusparseCreateDnMat(&context.s_row_major, n2, n1, n1, const_cast<double*>(d_s), CUDA_R_64F, CUSPARSE_ORDER_ROW));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_row_major, n2, n1, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_ROW));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_col_major, n1, n2, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_COL));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer_col_major, n1, n2, n1, d_buffer, CUDA_R_64F, CUSPARSE_ORDER_COL));
+    CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer2_col_major, n1, n2, n1, d_buffer2, CUDA_R_64F, CUSPARSE_ORDER_COL));
+
+    size_t workspace_1 = 0;
+    size_t workspace_2 = 0;
+    size_t workspace_3 = 0;
+    size_t workspace_4 = 0;
     const double alpha_one = 1.0;
     const double beta_zero = 0.0;
-    const double alpha_neg2_lambda_e = -2.0 * lambda_e;
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_intra_dist2.descr, s_row_major, &beta_zero, cost_row_major,
+                                           &alpha_one, d_intra_dist2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
                                            CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_1));
-    CHECK_CUDA(cudaMalloc(&d_workspace_1, workspace_1));
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, d_intra_dist2.descr, s_row_major, &beta_zero, cost_row_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_1));
+    CHECK_CUDA(cudaMalloc(&context.d_workspace_1, workspace_1));
+    CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha_one, d_intra_dist2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_1));
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_neg2_lambda_e, d_intra_dist1.descr, cost_col_major, &beta_zero, buffer2_col_major,
+                                           &context.alpha_neg2_lambda_e, d_intra_dist1.descr, context.cost_col_major, &beta_zero, context.buffer2_col_major,
                                            CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_2));
-    CHECK_CUDA(cudaMalloc(&d_workspace_2, workspace_2));
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_neg2_lambda_e, d_intra_dist1.descr, cost_col_major, &beta_zero, buffer2_col_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_2));
+    CHECK_CUDA(cudaMalloc(&context.d_workspace_2, workspace_2));
+    CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &context.alpha_neg2_lambda_e, d_intra_dist1.descr, context.cost_col_major, &beta_zero, context.buffer2_col_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_2));
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_row_norm_adj2.descr, s_row_major, &beta_zero, cost_row_major,
+                                           &alpha_one, d_row_norm_adj2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
                                            CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_3));
-    CHECK_CUDA(cudaMalloc(&d_workspace_3, workspace_3));
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, d_row_norm_adj2.descr, s_row_major, &beta_zero, cost_row_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_3));
+    CHECK_CUDA(cudaMalloc(&context.d_workspace_3, workspace_3));
+    CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha_one, d_row_norm_adj2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_3));
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_row_norm_adj1.descr, cost_col_major, &beta_zero, buffer_col_major,
+                                           &alpha_one, d_row_norm_adj1.descr, context.cost_col_major, &beta_zero, context.buffer_col_major,
                                            CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_4));
-    CHECK_CUDA(cudaMalloc(&d_workspace_4, workspace_4));
+    CHECK_CUDA(cudaMalloc(&context.d_workspace_4, workspace_4));
+    CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &alpha_one, d_row_norm_adj1.descr, context.cost_col_major, &beta_zero, context.buffer_col_major,
+                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_4));
+}
+
+void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
+                                      const ComputeCostContext& context,
+                                      const CudaCsrMatrix& d_row_norm_adj1,
+                                      const CudaCsrMatrix& d_row_norm_adj2,
+                                      const CudaCsrMatrix& d_intra_dist1,
+                                      const CudaCsrMatrix& d_intra_dist2,
+                                      const double* d_c_fixed,
+                                      double lambda_n,
+                                      double* d_cost,
+                                      double* d_buffer,
+                                      double* d_buffer2) {
+    const double alpha_one = 1.0;
+    const double beta_zero = 0.0;
+
     CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, d_row_norm_adj1.descr, cost_col_major, &beta_zero, buffer_col_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, d_workspace_4));
+                                &alpha_one, d_intra_dist2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_1));
 
-    const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
-    const unsigned int blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
-    log_floor_inplace_kernel<<<blocks, kBlockSize>>>(d_buffer, matrix_size, 1e-15);
-    CHECK_CUDA(cudaGetLastError());
-    fuse_cost_terms_kernel<<<blocks, kBlockSize>>>(d_buffer2, d_buffer, d_c_fixed, lambda_n, matrix_size, d_cost);
-    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &context.alpha_neg2_lambda_e, d_intra_dist1.descr, context.cost_col_major, &beta_zero, context.buffer2_col_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_2));
 
-    CHECK_CUDA(cudaFree(d_workspace_4));
-    CHECK_CUDA(cudaFree(d_workspace_3));
-    CHECK_CUDA(cudaFree(d_workspace_2));
-    CHECK_CUDA(cudaFree(d_workspace_1));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(buffer2_col_major));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(buffer_col_major));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(cost_col_major));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(cost_row_major));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(s_row_major));
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, d_row_norm_adj2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_3));
+
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, d_row_norm_adj1.descr, context.cost_col_major, &beta_zero, context.buffer_col_major,
+                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_4));
+
+    const unsigned int blocks = static_cast<unsigned int>((context.matrix_size + kBlockSize - 1) / kBlockSize);
+    log_floor_inplace_kernel<<<blocks, kBlockSize>>>(d_buffer, context.matrix_size, 1e-15);
+    CHECK_CUDA(cudaGetLastError());
+    fuse_cost_terms_kernel<<<blocks, kBlockSize>>>(d_buffer2, d_buffer, d_c_fixed, lambda_n, context.matrix_size, d_cost);
+    CHECK_CUDA(cudaGetLastError());
 }
 
 } // namespace
@@ -818,6 +906,7 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     double* d_h_log = nullptr;
     double* d_row_avg_square_dist1 = nullptr;
     double* d_row_avg_square_dist2 = nullptr;
+    double* d_update_block_sums = nullptr;
 
     CHECK_CUDA(cudaMalloc(&d_s, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_s_old, matrix_size * sizeof(double)));
@@ -832,6 +921,10 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     CHECK_CUDA(cudaMalloc(&d_h_log, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist1, static_cast<size_t>(n1) * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist2, static_cast<size_t>(n2) * sizeof(double)));
+    const unsigned int update_blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+    if (update_blocks > 0) {
+        CHECK_CUDA(cudaMalloc(&d_update_block_sums, static_cast<size_t>(update_blocks) * sizeof(double)));
+    }
 
     CHECK_CUDA(cudaMemcpy(d_s, S.data(), matrix_size * sizeof(double), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_c_fixed, d_cross_dist, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
@@ -859,6 +952,11 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
                          << std::chrono::duration_cast<std::chrono::milliseconds>(time_2 - time_1).count()
                          << " ms" << std::endl << std::endl);
 
+    ComputeCostContext compute_cost_context;
+    initialize_compute_cost_context(compute_cost_context, sp_handle.handle, d_row_norm_adj1_tr, row_norm_adj2,
+                                    intra_dist1_sparse, intra_dist2_sparse, d_s, n1, n2, lambda_e,
+                                    d_cost, d_buffer, d_buffer2);
+
     bool has_cost_old = false;
     double c_compute_time = 0.0;
     double cost_compute_time = 0.0;
@@ -870,8 +968,9 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
         CHECK_CUDA(cudaMemcpy(d_s_old, d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
 
         const auto time_l_done = std::chrono::high_resolution_clock::now();
-        compute_cost_fused_2_cuda_device(sp_handle.handle, d_row_norm_adj1_tr, row_norm_adj2, intra_dist1_sparse, intra_dist2_sparse,
-                                         d_s, n1, n2, d_c_fixed, lambda_e, lambda_n, d_cost, d_buffer, d_buffer2);
+        compute_cost_fused_2_cuda_device(sp_handle.handle, compute_cost_context, d_row_norm_adj1_tr, row_norm_adj2,
+                                         intra_dist1_sparse, intra_dist2_sparse, d_c_fixed, lambda_n,
+                                         d_cost, d_buffer, d_buffer2);
         const auto time_c_done = std::chrono::high_resolution_clock::now();
         c_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_c_done - time_l_done).count();
 
@@ -899,7 +998,8 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
         const auto time_iter_2 = std::chrono::high_resolution_clock::now();
         inner_loop += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_2 - time_iter_1).count();
 
-        const double diff_s = update_s_device(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, lambda_total);
+        const double diff_s = update_s_device(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, lambda_total,
+                                              d_update_block_sums, blas_handle.handle);
         const auto time_iter_3 = std::chrono::high_resolution_clock::now();
         update_s_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_3 - time_iter_2).count();
         DEBUG_ONLY(printf("inner iter %d and diff of S %.6f\n\n", it, diff_s));
@@ -907,6 +1007,8 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
 
     CHECK_CUDA(cudaMemcpy(S.data(), d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToHost));
 
+    destroy_compute_cost_context(compute_cost_context);
+    if (d_update_block_sums != nullptr) CHECK_CUDA(cudaFree(d_update_block_sums));
     CHECK_CUDA(cudaFree(d_cost_t));
     CHECK_CUDA(cudaFree(d_buffer2));
     CHECK_CUDA(cudaFree(d_buffer));
