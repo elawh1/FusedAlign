@@ -72,7 +72,6 @@ std::vector<double> l2_norm(std::vector<double> rwr, int n, int d) {
     return rwr;
 }
 
-#ifndef PARROT_CUDA_NATIVE_HELPERS
 void l2_norm_inplace(std::vector<double>& rwr, size_t n, size_t d) {
     std::vector<double> norms(n);
     #pragma omp parallel for
@@ -86,9 +85,7 @@ void l2_norm_inplace(std::vector<double>& rwr, size_t n, size_t d) {
             cblas_dscal((MKL_INT)d, norms[i], &rwr[i], (MKL_INT)n);
     }
 }
-#endif
 
-#ifndef PARROT_CUDA_NATIVE_HELPERS
 void get_normalized_neg_exp_dist (std::vector<double> rwr1, std::vector<double>  rwr2, int n1, int n2, int l, std::vector<double>& cross_rwr_dist) {
     // l2_norm_inplace(rwr1, n1, l);
     // l2_norm_inplace(rwr2, n2, l);
@@ -109,7 +106,6 @@ void get_normalized_neg_exp_dist (std::vector<double> rwr1, std::vector<double> 
     //     vdExp((MKL_INT)total, cross_rwr_dist.data(), cross_rwr_dist.data());
     // }
 }
-#endif
 
 void masked_sddmm_intra_cost (std::vector<double>&  emb, sparse_matrix_t mask, int n, int L, sparse_matrix_t& result) {
     // l2_norm_inplace(emb, n, L);
@@ -175,7 +171,6 @@ std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>> get_anchor_pairs(std::vect
     return {anchor_g1, anchor_g2};
 }
 
-#ifndef PARROT_CUDA_NATIVE_HELPERS
 sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
 
     std::vector<double> all_ones(n, (double) 1.0);
@@ -269,7 +264,6 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
 
     return graph_norm_csr;
 }
-#endif
 
 sparse_matrix_t row_normalize_graph_new( sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) {
     
@@ -396,7 +390,6 @@ void get_batch_rwr_scores(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> a
         " spmm time " << spmm_time << " add after spmm time " << add_after_spmm_time << " swap after spmm time " << swap_after_spmm_time << std::endl);
 }
 
-#ifndef PARROT_CUDA_NATIVE_HELPERS
 void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, 
                     std::vector<MKL_INT>>& anchors, double val) {
     const MKL_INT k = (MKL_INT)anchors.first.size();
@@ -413,7 +406,6 @@ void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, cons
         A[idx] = val;
     }
 }
-#endif
 
 // Then set H[row, col] = 1 for each anchor
 void init_H_with_anchors(std::vector<double>& H, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchors) {
@@ -794,7 +786,6 @@ void get_product_rwr_mat_new( sparse_matrix_t graph1_normalized, sparse_matrix_t
 //     dscal_chunked(N, 1.0 - gamma, out_cross_dist.data());
 // }
 
-#ifndef PARROT_CUDA_NATIVE_MINAA_V3_DENSE
 void minaa_v3_dense( std::vector<double>& Cost, const std::vector<double>& b, int n_row, int n_col, double epsilon, std::vector<double>& out_vec ) {
     unsigned int numThreads = mkl_get_max_threads();
     mkl_set_num_threads(1);
@@ -818,7 +809,6 @@ void minaa_v3_dense( std::vector<double>& Cost, const std::vector<double>& b, in
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
 }
-#endif
 
 void euclidean_distance_mat_vec( const std::vector<double>& X, const std::vector<double>& y, int n, int d, std::vector<double>& out_vec ) {
     #pragma omp parallel for 
@@ -891,7 +881,6 @@ void compute_L_fixed( sparse_matrix_t& intra_dist1, sparse_matrix_t& intra_dist2
 }
 
 
- #ifndef PARROT_CUDA_NATIVE_COMPUTE_COST_FIXED
 void compute_Cost_fixed( sparse_matrix_t& intra_dist1, sparse_matrix_t& intra_dist2, std::vector<double>& cross_dist, const std::vector<double>& H_log, 
         int n1, int n2, double lambda_e, double lambda_a ) {
     auto time_0 = std::chrono::high_resolution_clock::now();
@@ -917,7 +906,6 @@ void compute_Cost_fixed( sparse_matrix_t& intra_dist1, sparse_matrix_t& intra_di
     DEBUG_ONLY(std::cout << "in compute_Cost_fixed before loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
         " after loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << std::endl);
 }
-#endif
 
 void compute_RW_term ( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, const std::vector<double>& S, int n1, int n2, std::vector<double>& RW_term) {
     std::vector<double> buffer(n1*n2);
@@ -1086,7 +1074,6 @@ void compute_cost_fused( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm
 }
 
 
-#ifndef PARROT_CUDA_NATIVE_COMPUTE_COST_FUSED_2
 void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, const std::vector<double>& S, int n1, int n2,  sparse_matrix_t intra_dist1, 
         sparse_matrix_t intra_dist2, const std::vector<double>& C_fixed, double lambda_e, double lambda_n, std::vector<double>& C) {
 
@@ -1129,10 +1116,8 @@ void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_no
         " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
         " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << " ms" << std::endl);
 }
-#endif
 
 
-#ifndef PARROT_CUDA_NATIVE_UPDATE_S_MAT
 double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, const std::vector<double>& Cost, const std::vector<double>& a_row, const std::vector<double>& b_col, int n1, int n2, double epsilon) {
 
     unsigned int numThreads = mkl_get_max_threads();
@@ -1153,9 +1138,7 @@ double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, c
 
     return  std::accumulate(sum_diss_S.begin(), sum_diss_S.end(), 0); 
 }
-#endif
 
-#ifndef PARROT_CUDA_NATIVE_CON_PROX_PT_OPT
 std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, int n1, int n2,int avg_nnz1_per_n1, int avg_nnz2_per_n2, 
     std::vector<double>& cross_dist, sparse_matrix_t intra_dist1_sparse, sparse_matrix_t intra_dist2_sparse, int inner_iters, int outer_iters, double lambda_n, double lambda_a, 
     double lambda_p, double lambda_e_in, const std::pair<std::vector<MKL_INT>,std::vector<MKL_INT>>& anchor_pairs, bool sparsify) {
@@ -1228,10 +1211,6 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
         auto time_iter_1 = std::chrono::high_resolution_clock::now();
         Cost_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_1 - time_C_done).count()  ;
         // ---- Sinkhorn inner iterations ----
-#ifdef PARROT_CUDA_NATIVE_SINKHORN_INNER_LOOP
-        run_sinkhorn_iterations_cuda(Cost, n1, n2, inner_iters, lambda_total, a_row, b_col);
-        mkl_domatcopy('C', 'T', n1, n2, 1.0, Cost.data(), n1, temp.data(), n2);
-#else
         mkl_domatcopy('C', 'T', n1, n2, 1.0, Cost.data(), n1, temp.data(), n2);     //here temp is transpose of cost matrix
         for (int j = 0; j < inner_iters; ++j) {
             auto t_0 = std::chrono::high_resolution_clock::now() ;
@@ -1243,7 +1222,6 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
             auto t_2 = std::chrono::high_resolution_clock::now() ;
             compute_minbb += std::chrono::duration_cast<std::chrono::milliseconds>(t_2 - t_1).count()  ;
         }
-#endif
         auto time_iter_2 = std::chrono::high_resolution_clock::now();        
         inner_loop += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_2 - time_iter_1).count()  ;
 
@@ -1277,4 +1255,3 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
     DEBUG_ONLY(std::cout << "done con_prox_pt_opt_init" << std::endl);
     return S;
 }   
-#endif
