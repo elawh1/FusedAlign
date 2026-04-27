@@ -1,3 +1,5 @@
+#pragma once
+
 #include <iostream>
 #include <vector>
 #include <mkl.h>
@@ -25,6 +27,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include "debug_log.h"
 
 // Given: A (n1 x n1), B (n1 x n2), C (n2 x n2), D (n1 x n2), block_size
 // All dense matrices are column-major.

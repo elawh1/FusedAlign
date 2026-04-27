@@ -1,3 +1,5 @@
+#pragma once
+
 #include <mkl.h>
 #include <cmath>
 #include <cinttypes>   
@@ -20,6 +22,7 @@
 #include <limits>
 #include <numeric>
 #include <utility>
+#include "debug_log.h"
 
 bool has_nan(const std::vector<double>& v);
 

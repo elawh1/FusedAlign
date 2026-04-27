@@ -188,11 +188,11 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
             isolated_node = true;
         }   
     }
-    printf("ang nnz %d num of isolated %ld\n", avg_nnz_per_n, isolated.size());
+    DEBUG_ONLY(printf("ang nnz %d num of isolated %ld\n", avg_nnz_per_n, isolated.size()));
 
     sparse_matrix_t graph_connected = nullptr;
     if(isolated_node) {
-        printf("connecting isolated nodes\n");
+        DEBUG_ONLY(printf("connecting isolated nodes\n"));
 
         std::vector<double> edge_list;
         // connect to #avg_nnz_per_n number of random nodes and make it symmetric
@@ -214,7 +214,7 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
             // graph_row_sum[i] = static_cast<double>(avg_nnz_per_n);
         }
         
-        printf("edge_list size %d \n", edge_list.size());
+        DEBUG_ONLY(printf("edge_list size %d \n", edge_list.size()));
         // sparse_matrix_t add_mat = make_mat_from_edgelist(edge_list, n, n);
         sparse_matrix_t add_mat = make_mat_from_edgelist(edge_list, n, n);
         //add add_mat to original graph
@@ -234,7 +234,7 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
     auto time_1 = std::chrono::high_resolution_clock::now();
 
     for(int i=0; i<graph_row_sum.size(); i++)
-        if (graph_row_sum[i] < 1e-10)  printf("111 graph_row_sum[%d] is zero \n", i);
+        if (graph_row_sum[i] < 1e-10) DEBUG_ONLY(printf("111 graph_row_sum[%d] is zero \n", i));
     
     MKLCSC Dinv = make_diag_csc(graph_row_sum, n, n, true);
     sparse_matrix_t graph_norm = nullptr;    
@@ -247,7 +247,7 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
     status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph_norm, descr, all_ones.data(), (double) 0.0, graph_row_sum.data());
     if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
     for(int i=0; i<graph_row_sum.size(); i++)
-        if (graph_row_sum[i] < 1e-10) printf("222 graph_row_sum[%d] is zero \n", i);
+        if (graph_row_sum[i] < 1e-10) DEBUG_ONLY(printf("222 graph_row_sum[%d] is zero \n", i));
 
     mkl_sparse_optimize(graph_norm);
     sparse_matrix_t graph_norm_csr = nullptr;
@@ -259,7 +259,7 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
     status = mkl_sparse_d_mv(SPARSE_OPERATION_NON_TRANSPOSE, (double) 1.0, graph_norm_csr, descr, all_ones.data(), (double) 0.0, graph_row_sum.data());
     if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_d_mv failed in get_batch_rwr_scores");
     for(int i=0; i<graph_row_sum.size(); i++)
-        if (graph_row_sum[i] < 1e-10)  printf("333 graph_row_sum[%d] is zero \n", i);
+        if (graph_row_sum[i] < 1e-10) DEBUG_ONLY(printf("333 graph_row_sum[%d] is zero \n", i));
 
 
     return graph_norm_csr;
@@ -282,11 +282,11 @@ sparse_matrix_t row_normalize_graph_new( sparse_matrix_t graph, int n, MKL_INT a
             isolated_node = true;
         }   
     }
-    printf("num of isolated %ld\n", isolated.size());
+    DEBUG_ONLY(printf("num of isolated %ld\n", isolated.size()));
 
     sparse_matrix_t graph_connected = nullptr;
     if(isolated_node) {
-        printf("connecting isolated nodes\n");
+        DEBUG_ONLY(printf("connecting isolated nodes\n"));
 
         std::vector<double> edge_list;
 
@@ -385,9 +385,9 @@ void get_batch_rwr_scores(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> a
     }
     std::swap(X_vals, Xnext_vals);
     auto time_2 = std::chrono::high_resolution_clock::now();
-    std::cout << "in get_batch_rwr_scores generate E " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
-    " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()  <<
-    " spmm time " << spmm_time  <<  " add after spmm time " << add_after_spmm_time  <<  " swap after spmm time " << swap_after_spmm_time  << std::endl;
+    DEBUG_ONLY(std::cout << "in get_batch_rwr_scores generate E " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+        " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " spmm time " << spmm_time << " add after spmm time " << add_after_spmm_time << " swap after spmm time " << swap_after_spmm_time << std::endl);
 }
 
 void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, 
@@ -511,7 +511,7 @@ std::vector<double> get_product_rwr_mat_fused( sparse_matrix_t graph1_py, sparse
     // std::vector<double> temp(n1 * n2);
     // std::vector<double> CC(n1 * n2);
     auto time_2 = std::chrono::high_resolution_clock::now();
-    printf("in fused cross dist print sparse matrices\n");
+    DEBUG_ONLY(printf("in fused cross dist print sparse matrices\n"));
     // print_sparse_matrix_info(graph1_normalized, "graph1_normalized");
     // print_sparse_matrix_info(graph2_normalized, "graph2_normalized");
     for (int i = 0; i < max_iters; ++i) {
@@ -544,11 +544,11 @@ std::vector<double> get_product_rwr_mat_fused( sparse_matrix_t graph1_py, sparse
         //compute max of absolute values of (out_cross_dist - out_cross_dist_old)
         if (out_cross_dist_converge(out_cross_dist, out_cross_dist_old, tol)) break;
         auto time_2_4 = std::chrono::high_resolution_clock::now();
-        std::cout << "fused cross dist " << i <<
-        " --  copy new to old " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_1-time_2_0).count() << 
-        " -- fused spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_2-time_2_1).count() <<
-        " -- add to att dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_3-time_2_2).count() <<
-        " -- converge compute " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_4-time_2_3).count() << std::endl;
+        DEBUG_ONLY(std::cout << "fused cross dist " << i <<
+            " --  copy new to old " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_1-time_2_0).count() <<
+            " -- fused spmm " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_2-time_2_1).count() <<
+            " -- add to att dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_3-time_2_2).count() <<
+            " -- converge compute " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_4-time_2_3).count() << std::endl);
     }
     auto time_3 = std::chrono::high_resolution_clock::now();
     
@@ -556,11 +556,10 @@ std::vector<double> get_product_rwr_mat_fused( sparse_matrix_t graph1_py, sparse
     cblas_dscal(n1 * n2, 1.0 - gamma, out_cross_dist.data(), 1);
     auto time_4 = std::chrono::high_resolution_clock::now();
 
-    std::cout << "in get_product_rwr_mat row normalize " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
-    " init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
-    " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << 
-    " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()   
-    << std::endl;
+    DEBUG_ONLY(std::cout << "in get_product_rwr_mat row normalize " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+        " init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() <<
+        " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << std::endl);
     
     return out_cross_dist;
 }
@@ -668,10 +667,10 @@ void get_product_rwr_mat( sparse_matrix_t graph1_normalized, sparse_matrix_t gra
     cblas_dscal(n1 * n2, 1.0 - gamma, out_cross_dist.data(), 1);
     auto time_4 = std::chrono::high_resolution_clock::now();
 
-    std::cout << "in get_product_rwr_mat init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
-    " permute matrices " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_new-time_2).count()   << 
-    " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2_new).count()   << 
-    " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count()  << std::endl;
+    DEBUG_ONLY(std::cout << "in get_product_rwr_mat init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " permute matrices " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2_new-time_2).count() <<
+        " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2_new).count() <<
+        " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_3).count() << std::endl);
 }
 
 void get_product_rwr_mat_new( sparse_matrix_t graph1_normalized, sparse_matrix_t graph2_normalized, 
@@ -728,10 +727,10 @@ void get_product_rwr_mat_new( sparse_matrix_t graph1_normalized, sparse_matrix_t
     // }
     dscal_chunked(N, 1.0 - gamma, out_cross_dist.data());
     auto time_3 = std::chrono::high_resolution_clock::now();
-    std::cout << "in get_product_rwr_mat init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
-    " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
-    " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()  << std::endl;
-    std::cout << "in for loop 1st spmm " << time_spmm1  << " 2nd spmm " << time_spmm2  << " add " << time_add  << " convergence " << time_convergence  << std::endl;
+    DEBUG_ONLY(std::cout << "in get_product_rwr_mat init " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+        " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " cblas_dscal " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << std::endl);
+    DEBUG_ONLY(std::cout << "in for loop 1st spmm " << time_spmm1 << " 2nd spmm " << time_spmm2 << " add " << time_add << " convergence " << time_convergence << std::endl);
 }
 
 // void get_product_rwr_mat_new2( sparse_matrix_t graph1_normalized, sparse_matrix_t graph2_normalized, const std::vector<double>& in_cross_dist,
@@ -904,8 +903,8 @@ void compute_Cost_fixed( sparse_matrix_t& intra_dist1, sparse_matrix_t& intra_di
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
     auto time_2 = std::chrono::high_resolution_clock::now();
-    std::cout << "in compute_Cost_fixed before loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() << 
-    " after loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << std::endl;
+    DEBUG_ONLY(std::cout << "in compute_Cost_fixed before loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+        " after loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << std::endl);
 }
 
 void compute_RW_term ( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, const std::vector<double>& S, int n1, int n2, std::vector<double>& RW_term) {
@@ -1019,9 +1018,9 @@ void compute_C_L_fused( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
     auto time_3 = std::chrono::high_resolution_clock::now();
-    std::cout << "in compute_C_L_fused first 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
-    " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
-    " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << " ms" << std::endl;
+    DEBUG_ONLY(std::cout << "in compute_C_L_fused first 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+        " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << " ms" << std::endl);
 }
 
 
@@ -1069,9 +1068,9 @@ void compute_cost_fused( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
     auto time_3 = std::chrono::high_resolution_clock::now();
-    std::cout << "in compute_cost_fused first 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
-    " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
-    " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << " ms" << std::endl;
+    DEBUG_ONLY(std::cout << "in compute_cost_fused first 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+        " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << " ms" << std::endl);
 }
 
 
@@ -1113,9 +1112,9 @@ void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_no
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
     auto time_3 = std::chrono::high_resolution_clock::now();
-    std::cout << "in compute_cost_fused_2 first 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << 
-    " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << 
-    " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count()   << " ms" << std::endl;
+    DEBUG_ONLY(std::cout << "in compute_cost_fused_2 first 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
+        " second 2spmm : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " matrix iter : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-time_2).count() << " ms" << std::endl);
 }
 
 
@@ -1160,7 +1159,7 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
     bool has_C_old = false;
 
     auto time_1 = std::chrono::high_resolution_clock::now();
-    std::cout << "initialization in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count()   << " ms" << std::endl;
+    DEBUG_ONLY(std::cout << "initialization in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() << " ms" << std::endl);
 
     //transpose row_norm_adj1 and row_norm_adj2
     sparse_matrix_t row_norm_adj1_tr = nullptr, row_norm_adj2_tr = nullptr; 
@@ -1177,12 +1176,12 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
     H_log.clear();      H_log.shrink_to_fit();
 
     auto time_2 = std::chrono::high_resolution_clock::now();
-    std::cout << "L_fixed computation in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count()   << " ms" << std::endl << std::endl;
+    DEBUG_ONLY(std::cout << "L_fixed computation in optimization : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() << " ms" << std::endl << std::endl);
     auto L_compute_time=0, C_compute_time=0, Cost_compute_time=0, compute_minaa=0, compute_minbb=0, update_S=0, inner_loop=0;
     
     // printf("before outer iteration mkl nthreads %d omp nthreads %d\n", mkl_get_max_threads(), omp_get_num_threads());
     for (int it = 0; it < outer_iters; ++it) {
-        printf("----- outer iterration %d ----\n", it);
+        DEBUG_ONLY(printf("----- outer iterration %d ----\n", it));
         auto time_iter_0 = std::chrono::high_resolution_clock::now();
         cblas_dcopy(N, S.data(), 1, S_old.data(), 1); 
 
@@ -1208,11 +1207,11 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
         vdLn(N, S.data(), S.data());
         // cblas_dcopy(n1*n2, Cost.data(), 1, Cost.data(), 1);
         cblas_daxpy(N, -lambda_p, S.data(), 1, Cost.data(), 1);
-        mkl_domatcopy('C', 'T', n1, n2, 1.0, Cost.data(), n1, temp.data(), n2);     //here temp is transpose of cost matrix
 
         auto time_iter_1 = std::chrono::high_resolution_clock::now();
         Cost_compute_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_iter_1 - time_C_done).count()  ;
         // ---- Sinkhorn inner iterations ----
+        mkl_domatcopy('C', 'T', n1, n2, 1.0, Cost.data(), n1, temp.data(), n2);     //here temp is transpose of cost matrix
         for (int j = 0; j < inner_iters; ++j) {
             auto t_0 = std::chrono::high_resolution_clock::now() ;
             // a_row = minaa_v3_dense(Cost, b_col, n1, n2, lambda_total);
@@ -1236,7 +1235,7 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
         // mkl_domatadd('C', 'N', 'N', n1, n2, 1.0, S.data(), n1, -1.0, S_old.data(), n1, temp.data(), n1);
         // vdAbs(n1*n2, temp.data(), temp.data());
         // double diff_S = cblas_dasum(n1*n2, temp.data(), 1);
-        printf("inner iter %d and diff of S %.6f\n\n", it, diff_S);
+        DEBUG_ONLY(printf("inner iter %d and diff of S %.6f\n\n", it, diff_S));
 
 
         // if( it > 3 && sparsify ) {
@@ -1250,9 +1249,9 @@ std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matri
 
     }
     auto time_4 = std::chrono::high_resolution_clock::now();
-    std::cout << "total time of 10 outer iterations : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_2).count()   << " ms" << std::endl;
-    std::cout << " L_compute_time : " << L_compute_time <<  " C_compute_time : " << C_compute_time <<  " Cost_compute_time : " << Cost_compute_time <<  
-    " mina : " << compute_minaa << " minb : " << compute_minbb << " update_S : " << update_S << " ms" << std::endl;
-    std::cout << "done con_prox_pt_opt_init" << std::endl;
+    DEBUG_ONLY(std::cout << "total time of 10 outer iterations : " << std::chrono::duration_cast<std::chrono::milliseconds>(time_4-time_2).count() << " ms" << std::endl);
+    DEBUG_ONLY(std::cout << " L_compute_time : " << L_compute_time << " C_compute_time : " << C_compute_time << " Cost_compute_time : " << Cost_compute_time <<
+        " mina : " << compute_minaa << " minb : " << compute_minbb << " update_S : " << update_S << " ms" << std::endl);
+    DEBUG_ONLY(std::cout << "done con_prox_pt_opt_init" << std::endl);
     return S;
 }   

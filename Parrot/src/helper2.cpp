@@ -89,9 +89,9 @@ void sparse_print_large_values(sparse_matrix_t A, double threshold) {
         for (MKL_INT k = rows_start[i]; k < rows_end[i]; ++k) {
             double x = values[k];
             if (!std::isnan(x) && !std::isinf(x) && std::abs(x) > threshold) {
-                std::cout << "sparse large value at row " << i
-                          << " col " << col_indx[k]
-                          << " : " << x << "\n";
+                DEBUG_ONLY(std::cout << "sparse large value at row " << i
+                                     << " col " << col_indx[k]
+                                     << " : " << x << "\n");
             }
         }
     }
@@ -288,6 +288,11 @@ sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int 
 // }
 
 void print_sparse_matrix_info(sparse_matrix_t A, const char* name) {
+#ifndef DEBUG
+    (void)A;
+    (void)name;
+    return;
+#else
     sparse_index_base_t indexing;
     MKL_INT rows, cols;
     MKL_INT *row_start, *row_end, *col_indx;
@@ -322,18 +327,31 @@ void print_sparse_matrix_info(sparse_matrix_t A, const char* name) {
         }
     }
     printf("====================\n");
+#endif
 }
 
 void print_num_zeros(std::vector<double>  M, const char* name ) {
+#ifndef DEBUG
+    (void)M;
+    (void)name;
+    return;
+#else
     int counter = 0;
     for(int i=0; i< M.size(); i++) {
         if(M[i] == (double) 0.0)    counter++;
     }
     printf(" %s has %d zeros out of %d values\n", name, counter, M.size());
     return ;
+#endif
 }
 
 void compare( const std::vector<double>& cpp_vec, const std::string& filename, const std::string& label) {
+#ifndef DEBUG
+    (void)cpp_vec;
+    (void)filename;
+    (void)label;
+    return;
+#else
     std::ifstream fin(filename);
     if (!fin.is_open()) {
         std::cerr << "Error: cannot open file " << filename << "\n";
@@ -374,9 +392,14 @@ void compare( const std::vector<double>& cpp_vec, const std::string& filename, c
     std::cout << label << " out of " << cpp_vec.size() << " elements " << counter_1 << " elements has more than 1 percent error" << std::endl;
     std::cout << label << " max_abs = " << max_abs << "  max_rel = " << max_rel
               << "  cpp: " << b_err << "  python: " << a_err << "\n\n";
+#endif
 }
 
 void print_Cost_vals (const std::vector<double>& Cost) {
+#ifndef DEBUG
+    (void)Cost;
+    return;
+#else
     int cnt1 = 0, cnt2 = 0, cnt3 = 0, cnt4 = 0, cnt5 = 0, cnt6 = 0;
     double max_cost = Cost[0], min_cost = Cost[0];
     for(int i=0; i<Cost.size(); i++) {
@@ -401,6 +424,7 @@ void print_Cost_vals (const std::vector<double>& Cost) {
     printf("Cost matrix total %d -  # %d > 4.0 ---- \n # 4.0 > %d > 3.0 ----  \n # 3 > %d > 2 ---- \n # 2 > %d > 1 ---- \n # 1 > %d > 0 ---- \n # %d < 0 \n", 
     Cost.size(), cnt1, cnt2, cnt3, cnt4, cnt5, cnt6);
     return;
+#endif
 }
 
 
@@ -420,6 +444,10 @@ double percentile(std::vector<double> S, double p) {
 
 
 void print_stats(const std::vector<double>& S) {
+#ifndef DEBUG
+    (void)S;
+    return;
+#else
     if (S.empty()) {
         std::cout << "Vector is empty\n";
         return;
@@ -460,6 +488,7 @@ void print_stats(const std::vector<double>& S) {
     std::cout << "90th percentile threshold: " << percentile(S, 0.90) << "\n";
     std::cout << "95th percentile threshold: " << percentile(S, 0.95) << "\n";
     std::cout << "99th percentile threshold: " << percentile(S, 0.99) << "\n";
+#endif
 }
 
 void sparsify_vector(std::vector<double>& S, double threshold) {
@@ -513,9 +542,9 @@ void graph_connect_isolated(sparse_matrix_t graph, std::vector<double>& graph_ro
         }   
     }
     
-    printf("in graph_connect_isolated function num of isolated %ld and avg_nnz_per_n is %d\n", isolated.size(), avg_nnz_per_n);
+    DEBUG_ONLY(printf("in graph_connect_isolated function num of isolated %ld and avg_nnz_per_n is %d\n", isolated.size(), avg_nnz_per_n));
     if(isolated_node) {
-        printf("connecting isolated nodes\n");
+        DEBUG_ONLY(printf("connecting isolated nodes\n"));
         std::vector<double> edge_list;
         // connect to #avg_nnz_per_n number of random nodes
         edge_list.reserve(isolated.size() * avg_nnz_per_n * 2);
@@ -535,7 +564,7 @@ void graph_connect_isolated(sparse_matrix_t graph, std::vector<double>& graph_ro
             graph_row_sum[i] = static_cast<MKL_INT>(avg_nnz_per_n);
             // printf("isolated node %d connected to %d nodes\n", i, edge_list.size());
         }
-        printf("connect isolated nodes : num fo edges to add %d\n", edge_list.size()/2);
+        DEBUG_ONLY(printf("connect isolated nodes : num fo edges to add %d\n", edge_list.size()/2));
         // build CSR matrix (values are implicitly 1.0 inside)
         sparse_matrix_t add_mat = make_mat_from_edgelist(edge_list, rows, rows);
         //add add_mat to original graph
@@ -552,7 +581,7 @@ void graph_connect_isolated(sparse_matrix_t graph, std::vector<double>& graph_ro
         if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("mkl_sparse_copy failed in graph_connect_isolated");
     }
     for(int i=0; i<graph_row_sum.size(); i++) {
-        if(graph_row_sum[i] == 0)   printf("error graph_row_sum[%d] is 0\n", i);
+        if(graph_row_sum[i] == 0) DEBUG_ONLY(printf("error graph_row_sum[%d] is 0\n", i));
     }
         
 }

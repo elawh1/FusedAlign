@@ -1,3 +1,5 @@
+#pragma once
+
 #ifdef MKL_AVAILABLE
 #include <mkl.h>
 #include <omp.h>
@@ -15,6 +17,7 @@
 #include <unordered_map>
 #include <numeric>
 #include <set>
+#include "debug_log.h"
 // #include <metis.h>
 // #include "helper2.h"
 #include "fused_spmm.h"
