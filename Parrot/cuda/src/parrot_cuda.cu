@@ -6,6 +6,7 @@
 #include <fstream>
 #include <ctime> 
 #include <chrono>
+#include <iomanip>
 #include <utility>
 #include "accuracy.h"
 #include "cuda_helper.cuh"
@@ -216,6 +217,20 @@ int main(int argc, char* argv[]){
 
     double mrr = mrr_mean_score_cpp( S, g1_num_nodes, g2_num_nodes, anchor_pairs_test);
     std::cout << "mrr : " << mrr << std::endl;
+    for (size_t i = 0; i < phase_timings.size(); ++i) {
+        if (i > 0) {
+            std::cout << " ";
+        }
+        std::cout << std::fixed << std::setprecision(2)
+                  << (static_cast<double>(phase_timings[i].second) / 1000.0);
+    }
+    std::cout << " " << std::fixed << std::setprecision(4)
+              << mrr
+              << " " << hits[1]
+              << " " << hits[10]
+              << " " << hits[30]
+              << " " << hits[50]
+              << std::endl;
 
     destroy_cuda_csr(intra_rwr2_masked_sddmm);
     destroy_cuda_csr(intra_rwr1_masked_sddmm);

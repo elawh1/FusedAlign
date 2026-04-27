@@ -93,8 +93,15 @@ struct BatchRwrContext {
     double* d_x = nullptr;
     double* d_xnext = nullptr;
     double* d_e = nullptr;
+    int* d_anchors = nullptr;
+    double* d_block_max = nullptr;
+    double* d_row_inv_norms_x = nullptr;
+    double* d_row_inv_norms_xnext = nullptr;
     void* d_buffer = nullptr;
     size_t dense_capacity = 0;
+    size_t anchor_capacity = 0;
+    size_t diff_capacity = 0;
+    size_t row_norm_capacity = 0;
     size_t buffer_capacity = 0;
     int current_n = 0;
     int current_l = 0;
