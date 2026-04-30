@@ -30,6 +30,9 @@ struct MKLCSC {
     ~MKLCSC() { if (spMat) mkl_sparse_destroy(spMat); }
 };
 
+void omp_spmm_col_omp(double alpha, sparse_matrix_t graph_csr, MKL_INT n1, int n2, double beta, const double* B, double* C, omp_sched_t sched = omp_sched_static, int chunk = 0) ;
+void omp_spmm_jik_v1(double alpha, sparse_matrix_t graph_csr, MKL_INT n1, int n2, double beta, const double* B, double* C, int b_c) ;
+
 std::vector<double> sparse_to_dense_colmajor(sparse_matrix_t A, MKL_INT nrows, MKL_INT ncols) ;
 
 //Create digonal sparse matrix from a vector of diagonal elements

@@ -1,6 +1,138 @@
 #include "helper.h"
 #include "helper2.h"
 
+// ============================================================
+// BLOCKED: jik loop order   (Algorithm 2 v1 — panel blocked)
+//  Outer loop:  j = 0, b_c, 2*b_c, ...  (column panels of B/C)
+//  Middle loop: i = 0 .. n1-1           (rows of A, parallelised)
+//  Inner loop:  nonzeros in row i of A
+//  Each stage only touches a NARROW strip of B and C (b_c cols),
+//  so those strips fit in L2/L3 cache → far fewer cache misses.
+// difference with omp_spmm_jik : here we read each column partition B inside the row for loop - this version is faster
+// ============================================================
+void omp_spmm_jik_v1(double alpha, sparse_matrix_t graph_csr, MKL_INT n1, int n2, double beta, const double* B, double* C, int b_c){
+    sparse_index_base_t indexing;
+    MKL_INT  rows, cols;
+    MKL_INT *rows_start = nullptr;
+    MKL_INT *rows_end   = nullptr;
+    MKL_INT *col_ind    = nullptr;
+    double  *vals       = nullptr;
+
+    auto st = mkl_sparse_d_export_csr( graph_csr, &indexing, &rows, &cols, &rows_start, &rows_end, &col_ind, &vals);
+    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("export csr failed");
+
+    const MKL_INT base = (indexing == SPARSE_INDEX_BASE_ONE) ? 1 : 0;
+    b_c = std::min(b_c, n2);
+    b_c = std::max(b_c, 1);
+    // Q : number of blocks in dense matrices
+    const int Q = (n2 + b_c - 1) / b_c;
+
+    unsigned int numThreads = mkl_get_max_threads();
+    omp_set_num_threads(numThreads);
+    mkl_set_num_threads(1);
+
+    for (int q = 0; q < Q; ++q)
+    {
+        const int j_start = q * b_c;
+        const int j_end   = std::min(j_start + b_c, n2);
+        const int panel_w = j_end - j_start;
+
+        #pragma omp parallel for schedule(guided) 
+        for (MKL_INT i = 0; i < rows; ++i)
+        {
+            // if ( q == 0 && i == 0 && omp_get_thread_num() == 0) {
+            //     int nthreads = omp_get_num_threads();
+            //     printf("Number of threads in this region: %d\n", nthreads);
+            // }
+            double* __restrict__ Ci_panel = C + (size_t)i * n2 + j_start;
+
+            if (beta == 0.0)
+                memset(Ci_panel, 0, panel_w * sizeof(double));
+            else if (beta != 1.0) {
+                #pragma omp simd
+                for (int j = 0; j < panel_w; ++j)
+                    Ci_panel[j] *= beta;
+            }
+            // beta == 1.0 → no scaling needed, C is already correct
+
+            if (alpha == 0.0) continue;
+
+            const MKL_INT row_s = rows_start[i] - base;
+            const MKL_INT row_e = rows_end[i]   - base;
+
+            for (MKL_INT p = row_s; p < row_e; ++p)
+            {
+                const MKL_INT k   = col_ind[p] - base;
+                const double  aik = alpha * vals[p];
+
+                const double* __restrict__ Bk_panel = B + (size_t)k * n2 + j_start;
+
+                #pragma omp simd
+                for (int j = 0; j < panel_w; ++j)
+                    Ci_panel[j] += aik * Bk_panel[j];
+            }
+        }
+    }
+    omp_set_num_threads(1);
+    mkl_set_num_threads(numThreads);
+}
+
+void omp_spmm_col_omp(double alpha, sparse_matrix_t graph_csr, MKL_INT n1, int n2, double beta, const double* B, double* C, omp_sched_t sched, int chunk) {
+// void omp_spmm_col_omp(double alpha, sparse_matrix_t graph_csr, MKL_INT n1, int n2, double beta, const double* B, double* C) {
+    if (!graph_csr || !B || !C || n1 <= 0 || n2 <= 0) return;
+
+    // Export CSR data from MKL handle
+    sparse_index_base_t indexing;
+    MKL_INT rows, cols;
+    MKL_INT *rows_start = nullptr, *rows_end = nullptr;
+    MKL_INT *col_indx   = nullptr;
+    double  *values     = nullptr;
+
+    sparse_status_t st = mkl_sparse_d_export_csr( graph_csr, &indexing, &rows, &cols, &rows_start, &rows_end, &col_indx, &values);
+
+    if (st != SPARSE_STATUS_SUCCESS) { std::fprintf(stderr, "mkl_sparse_d_export_csr failed: %d\n", (int)st); return;}
+
+    if (rows != n1 || cols != n1) {
+        std::fprintf(stderr, "Dimension mismatch: graph_csr is %lld x %lld, expected %lld x %lld\n",
+                     (long long)rows, (long long)cols,
+                     (long long)n1,  (long long)n1);
+        return;
+    }
+
+    unsigned int numThreads = mkl_get_max_threads();
+    omp_set_num_threads(numThreads);
+    mkl_set_num_threads(1);
+
+    const size_t total = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    if (beta == 0.0) {
+        #pragma omp parallel for schedule(static)
+        for (size_t idx = 0; idx < total; ++idx) {
+            C[idx] = 0.0;
+        }
+    } else if (beta != 1.0) {
+        #pragma omp parallel for schedule(static)
+        for (size_t idx = 0; idx < total; ++idx) {
+            C[idx] *= beta;
+        }
+    }
+    omp_set_schedule(sched, chunk);
+    #pragma omp parallel for schedule(runtime)
+    for (int j = 0; j < n2; ++j) {
+        const double* __restrict x = B + static_cast<size_t>(j) * n1;
+        double*       __restrict y = C + static_cast<size_t>(j) * n1;
+        for (MKL_INT i = 0; i < n1; ++i) {
+            double sum = 0.0;
+            // CSR row i
+            for (MKL_INT p = rows_start[i]; p < rows_end[i]; ++p) {
+                sum += values[p] * x[col_indx[p]];
+            }
+            y[i] += alpha * sum;
+        } 
+    }
+    omp_set_num_threads(1);
+    mkl_set_num_threads(numThreads);
+}
+
 std::vector<double> sparse_to_dense_colmajor(sparse_matrix_t A, MKL_INT nrows, MKL_INT ncols) {
     // Output: column-major dense matrix
     std::vector<double> dense(nrows * ncols, 0.0);
@@ -371,10 +503,12 @@ void get_batch_rwr_scores(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> a
     auto add_after_spmm_time = 0, spmm_time=0, swap_after_spmm_time=0;
     for(int i=0; i < max_iters-1; i++) {
         auto time_1_0 = std::chrono::high_resolution_clock::now();
-        auto status = mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, (double) (1-restart_prob), graph_norm_csr, descr, SPARSE_LAYOUT_COLUMN_MAJOR, X_vals.data(), l, n, 1.0, Xnext_vals.data(), n);
+        // auto status = mkl_sparse_d_mm(SPARSE_OPERATION_TRANSPOSE, (double) (1-restart_prob), graph_norm_csr, descr, SPARSE_LAYOUT_COLUMN_MAJOR, X_vals.data(), l, n, 1.0, Xnext_vals.data(), n);
+        // if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
+        omp_spmm_col_omp(1.0, graph_norm_csr, n, l, 0.0, X_vals.data(), Xnext_vals.data());
         auto time_1_1 = std::chrono::high_resolution_clock::now();
         spmm_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_1 - time_1_0).count();
-        if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
+        
         // cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, n, l, n,(double) (1-restart_prob), graph_norm_csr_dense.data(), n, X_vals.data(), n, restart_prob, Xnext_vals.data(), n);
         cblas_daxpy(n * l, 1.0, E.data(), 1, Xnext_vals.data(), 1);
         auto time_1_2 = std::chrono::high_resolution_clock::now();
@@ -640,17 +774,19 @@ void get_product_rwr_mat( sparse_matrix_t graph1_normalized, sparse_matrix_t gra
         out_cross_dist_old = out_cross_dist;
         mkl_domatcopy('C', 'T', n1, n2, 1.0, in_cross_dist.data(), n1, CC.data(), n2);
         // 2 spmm correct working version
-        auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
         // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, g1_BSR, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
         // auto st = blocked_mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1, colsize);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n2, n1, 0.0, temp.data(), n1);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+        omp_spmm_col_omp(1.0, graph1_normalized, n1, n2, 0.0, out_cross_dist.data(), temp.data());
         mkl_domatcopy('C', 'T', n1, n2, 1.0, temp.data(), n1, out_cross_dist.data(), n2);
         double coeff = (1 - rwr_restart_prob) * gamma;
         auto time_2_0_1 = std::chrono::high_resolution_clock::now();
-        st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n1, n2, (1+rwr_restart_prob), CC.data(), n2);
         // st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, g2_BSR, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n1, n2, (1+rwr_restart_prob), CC.data(), n2);
         // st = blocked_mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n1, n2, (1+rwr_restart_prob), CC.data(), n2, colsize);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph2_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, out_cross_dist.data(), n1, n2, (1+rwr_restart_prob), CC.data(), n2);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+        omp_spmm_col_omp(1.0, graph1_normalized, n1, n2, 0.0, out_cross_dist.data(), temp.data());
         auto time_2_0_2 = std::chrono::high_resolution_clock::now();
         mkl_domatcopy('C', 'T', n2, n1, 1.0, CC.data(), n2, out_cross_dist.data(), n1);
         
@@ -692,13 +828,15 @@ void get_product_rwr_mat_new( sparse_matrix_t graph1_normalized, sparse_matrix_t
         // we compute ( graph2_normalized * out_cross_dist^T )^T and we read and store dense ones row major - but since all dense matrices are col major it is interpreted as transpose
         auto time_1_0 = std::chrono::high_resolution_clock::now();
         // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph2_normalized, descr, SPARSE_LAYOUT_ROW_MAJOR, out_cross_dist_old.data(), n1, n2, 0.0, temp.data(), n1);
-        auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph2_normalized, descr, SPARSE_LAYOUT_ROW_MAJOR, out_cross_dist_old.data(), n1, n1, 0.0, temp.data(), n1);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph2_normalized, descr, SPARSE_LAYOUT_ROW_MAJOR, out_cross_dist_old.data(), n1, n1, 0.0, temp.data(), n1);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+        omp_spmm_jik_v1(1.0, graph2_normalized, n2, n1, 0.0, out_cross_dist_old.data(), temp.data(), 64);
         auto time_1_1 = std::chrono::high_resolution_clock::now();
         time_spmm1 += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_1 - time_1_0).count();
         double coeff = (1.0 - rwr_restart_prob) * gamma;
-        st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, temp.data(), n2, n1, 0.0, out_cross_dist.data(), n1);
-        if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+        // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, coeff, graph1_normalized, descr, SPARSE_LAYOUT_COLUMN_MAJOR, temp.data(), n2, n1, 0.0, out_cross_dist.data(), n1);
+        // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+        omp_spmm_col_omp(1.0, graph1_normalized, n1, n2, 0.0, temp.data(), out_cross_dist.data());
         auto time_1_2 = std::chrono::high_resolution_clock::now();
         time_spmm2 += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_2 - time_1_1).count();
         cblas_daxpy(N, (1.0 + rwr_restart_prob), in_cross_dist.data(), 1, out_cross_dist.data(), 1);
@@ -1083,18 +1221,22 @@ void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_no
     struct matrix_descr descr; descr.type = SPARSE_MATRIX_TYPE_GENERAL;
 
     auto time_0 = std::chrono::high_resolution_clock::now();
-    auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, intra_dist2, descr, SPARSE_LAYOUT_ROW_MAJOR, S.data(), n1, n1, 0.0, C.data(), n1);
-    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
-    st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, ((double) -2) * lambda_e, intra_dist1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, C.data(), n2, n1, 0.0, buffer2.data(), n1);
-    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+    // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, intra_dist2, descr, SPARSE_LAYOUT_ROW_MAJOR, S.data(), n1, n1, 0.0, C.data(), n1);
+    // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+    omp_spmm_jik_v1(1.0, intra_dist2, n2, n1, 0.0, S.data(), C.data(), 64);
+    // auto st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, ((double) -2) * lambda_e, intra_dist1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, C.data(), n2, n1, 0.0, buffer2.data(), n1);
+    // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+    omp_spmm_col_omp(((double) -2) * lambda_e, intra_dist1, n1, n2, 0.0, C.data(), buffer2.data());
     auto time_1 = std::chrono::high_resolution_clock::now();
    
 
     // Instead of computing 
-    st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_ROW_MAJOR, S.data(), n1, n1, 0.0, C.data(), n1);
-    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
-    st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, C.data(), n2, n1, 0.0, buffer.data(), n1);
-    if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+    // st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj2, descr, SPARSE_LAYOUT_ROW_MAJOR, S.data(), n1, n1, 0.0, C.data(), n1);
+    // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("first mkl_sparse_d_mm failed");
+    omp_spmm_jik_v1(1.0, row_norm_adj2, n2, n1, 0.0, S.data(), C.data(), 64);
+    // st = mkl_sparse_d_mm( SPARSE_OPERATION_NON_TRANSPOSE, 1.0, row_norm_adj1, descr, SPARSE_LAYOUT_COLUMN_MAJOR, C.data(), n2, n1, 0.0, buffer.data(), n1);
+    // if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("second mkl_sparse_d_mm failed");
+    omp_spmm_col_omp(1.0, row_norm_adj1, n1, n2, 0.0, C.data(), buffer.data());
     vdLn((MKL_INT)((size_t)n1 * n2), buffer.data(), buffer.data());
     auto time_2 = std::chrono::high_resolution_clock::now();
     // const double log_floor = 1e-15;
@@ -1130,13 +1272,14 @@ double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, c
         for (int i = 0; i < n1; ++i) {
             size_t idx = (size_t)j * n1 + i;
             S[idx] = (double) (0.95 * (double) std::exp(( a_val + b_col[i] - Cost[idx]) / epsilon) / (n1*n2)) + 0.05 * (double) (S_old[idx] );
-            sum_diss_S[omp_get_thread_num()] += std::abs(S[idx] - S_old[idx]);
+            // sum_diss_S[omp_get_thread_num()] += std::abs(S[idx] - S_old[idx]);
         }
     }
     mkl_set_num_threads(numThreads);
     omp_set_num_threads(1);
 
-    return  std::accumulate(sum_diss_S.begin(), sum_diss_S.end(), 0); 
+    // return  std::accumulate(sum_diss_S.begin(), sum_diss_S.end(), 0); 
+    return  0.0;
 }
 
 std::vector<double> con_prox_pt_opt( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, int n1, int n2,int avg_nnz1_per_n1, int avg_nnz2_per_n2, 

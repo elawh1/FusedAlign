@@ -553,7 +553,7 @@ void make_csr_csc_edgelist(const std::vector<double>& edgelist,
 
 enum class SparseFormat { CSR, CSC };
 void print_sparse_matrix_info(sparse_matrix_t A,
-                              SparseFormat fmt,
+                              SparseFormat fmt, bool all,
                               const char* name = "matrix") {
     sparse_index_base_t indexing;
     MKL_INT rows, cols;
@@ -583,16 +583,30 @@ void print_sparse_matrix_info(sparse_matrix_t A,
         MKL_INT nnz = row_end[rows - 1] - row_start[0];
         printf("Nonzeros: %lld\n", (long long)nnz);
 
-        printf("Sample entries (row, col, val):\n");
-        MKL_INT printed = 0;
-        for (MKL_INT i = 0; i < rows && printed < 10; ++i) {
-            for (MKL_INT k = row_start[i]; k < row_end[i] && printed < 10; ++k) {
-                MKL_INT kk = k - base;   // convert to C-array offset
-                printf("(%lld, %lld, %.3f)\n",
-                       (long long)(i + base),
-                       (long long)col_indx[kk],
-                       values[kk]);
-                printed++;
+        if (!all) {
+            printf("Sample entries (row, col, val):\n");
+            MKL_INT printed = 0;
+            for (MKL_INT i = 0; i < rows && printed < 10; ++i) {
+                for (MKL_INT k = row_start[i]; k < row_end[i] && printed < 10; ++k) {
+                    MKL_INT kk = k - base;   // convert to C-array offset
+                    printf("(%lld, %lld, %.3f)\n",
+                        (long long)(i + base),
+                        (long long)col_indx[kk],
+                        values[kk]);
+                    printed++;
+                }
+            }
+        }
+        else {
+            printf("All entries (row, col, val):\n");
+            for (MKL_INT i = 0; i < rows ; ++i) {
+                for (MKL_INT k = row_start[i]; k < row_end[i]; ++k) {
+                    MKL_INT kk = k - base;   // convert to C-array offset
+                    printf("(%lld, %lld, %.3f)\n",
+                        (long long)(i + base),
+                        (long long)col_indx[kk],
+                        values[kk]);
+                }
             }
         }
     } else {
@@ -709,7 +723,7 @@ void compare_dense( const std::vector<double>& vec1, const std::vector<double>& 
     for (size_t i = 0; i < vec1.size(); ++i) {
         double a = vec1[i];
         double b = vec2[i];
-        // printf("a %e b %e \n", a, b);
+        // if (i % 300000 == 5 ) printf("a %e b %e \n", a, b);
         double da = std::abs(a - b);
 
         if (da > max_abs) {
@@ -720,12 +734,18 @@ void compare_dense( const std::vector<double>& vec1, const std::vector<double>& 
 
         double denom = std::max({std::abs(a), std::abs(b), 1e-12});
         // if (da > (denom * 0.1)) std::cout << label << " more than 10 percent error-> cpp: " << b_err << "  python: " << a_err << "\n";
-        if (da > (denom * 0.1)) counter++;
-        if (da > (denom * 0.01)) counter_1++;
+        if (da > (denom * 0.1)) { 
+            counter++; 
+        } 
+        if (da > (denom * 0.01)) {
+            counter_1++;
+            // printf("row %d col %d a %e b %e \n", i/1000, i%1000, a, b);
+        }
         double rel = da / denom;
         if (rel > max_rel) max_rel = rel;
     
     }
+    // printf("\n min i %d max i %d\n\n", min_i, max_i);
     std::cout << label << " out of " << vec1.size() << " elements " << counter << " elements has more than 10 percent error" << std::endl;
     std::cout << label << " out of " << vec1.size() << " elements " << counter_1 << " elements has more than 1 percent error" << std::endl;
     std::cout << label << " max_abs = " << max_abs << "  max_rel = " << max_rel
