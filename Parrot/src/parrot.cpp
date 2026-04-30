@@ -102,21 +102,6 @@ int main(int argc, char* argv[]){
     auto time_3 = std::chrono::high_resolution_clock::now();
     phase_timings.push_back({"graph2 RWR", std::chrono::duration_cast<milliseconds>(time_3 - g2_rwr_start).count()});
     DEBUG_ONLY(std::cout << "graph2 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-g2_rwr_start).count() << " ms" << std::endl);
-    
-    // std::vector<double> cross_rwr_dist (g1_num_nodes * g2_num_nodes);
-    // if (use_attr) {
-    //     get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l, cross_rwr_dist);
-    //     std::vector<double> cross_attr_dist (g1_num_nodes * g2_num_nodes);
-    //     get_normalized_neg_exp_dist (g1_feat, g2_feat, g1_num_nodes, g2_num_nodes, g1_feat.size() / g1_num_nodes, cross_attr_dist);
-    //     cblas_daxpy(cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_rwr_dist.data(), 1);
-    //     cross_attr_dist.clear(); cross_attr_dist.shrink_to_fit();
-    // }
-    // else {
-    //     get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l, cross_rwr_dist);
-    //     cblas_dscal(g1_num_nodes * g2_num_nodes, (double) 1.5, cross_rwr_dist.data(), 1);
-    //     // cross_attr_dist = cross_rwr_dist;
-    //     // cblas_daxpy(cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_attr_dist.data(), 1);
-    // }
 
     //row normalize rwr for both graphs
     l2_norm_inplace(g1_rwr, g1_num_nodes, l);

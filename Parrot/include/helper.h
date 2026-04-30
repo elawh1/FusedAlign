@@ -18,8 +18,6 @@
 #include <numeric>
 #include <set>
 #include "debug_log.h"
-// #include <metis.h>
-// #include "helper2.h"
 #include "fused_spmm.h"
 #include "mkl_spblas.h"
 
