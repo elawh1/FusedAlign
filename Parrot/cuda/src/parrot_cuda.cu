@@ -14,7 +14,7 @@
 int main(int argc, char* argv[]){ 
 
     std::string data_path;
-    MKL_INT g1_num_nodes, g2_num_nodes;
+    int g1_num_nodes, g2_num_nodes;
     bool use_attr = false, directed = false;
     int inner_iters = 5;
     int outer_iters = 10;
@@ -25,7 +25,7 @@ int main(int argc, char* argv[]){
         CHECK_CUDA(cudaDeviceSynchronize());
         return std::chrono::high_resolution_clock::now();
     };
-    
+
     if (argc < 3) {
         printf("provide input directory and sparsifying option \n");
         return 0;
@@ -112,12 +112,13 @@ int main(int argc, char* argv[]){
     destroy_cuda_csr(graph2_row_normalized_t);
     destroy_cuda_csr(graph1_row_normalized_t);
 
+    CHECK_CUDA(cudaMalloc(&d_cross_rwr_dist, cross_size * sizeof(double)));
+    auto cross_rwr_start = synced_now();
+
     //row normalize rwr for both graphs
     l2_norm_inplace_device(d_g1_rwr, g1_num_nodes, l);
     l2_norm_inplace_device(d_g2_rwr, g2_num_nodes, l);
 
-    CHECK_CUDA(cudaMalloc(&d_cross_rwr_dist, cross_size * sizeof(double)));
-    auto cross_rwr_start = synced_now();
     get_normalized_neg_exp_dist_device(d_g1_rwr, d_g2_rwr, g1_num_nodes, g2_num_nodes, l, d_cross_rwr_dist);
     if (use_attr) {
         const size_t g1_feat_dim = g1_feat.size() / static_cast<size_t>(g1_num_nodes);
@@ -209,13 +210,14 @@ int main(int argc, char* argv[]){
         std::cout << "  " << phase.first << ": " << phase.second << " ms" << std::endl;
     }
 
-    std::unordered_map<int, double>  hits = hits_ks_mean_scores( S, g1_num_nodes, g2_num_nodes, anchor_pairs_test, std::vector<int>{1, 10, 30, 50});
+    AccuracyScores accuracy = accuracy_mean_scores_cpp(S, g1_num_nodes, g2_num_nodes, anchor_pairs_test, std::vector<int>{1, 10, 30, 50});
+    const auto& hits = accuracy.hits;
 
     for (const auto& pair : hits) {
         std::cout << "hit@ " << pair.first << " : " << pair.second << std::endl;
     }
 
-    double mrr = mrr_mean_score_cpp( S, g1_num_nodes, g2_num_nodes, anchor_pairs_test);
+    double mrr = accuracy.mrr;
     std::cout << "mrr : " << mrr << std::endl;
     for (size_t i = 0; i < phase_timings.size(); ++i) {
         if (i > 0) {
@@ -226,10 +228,10 @@ int main(int argc, char* argv[]){
     }
     std::cout << " " << std::fixed << std::setprecision(4)
               << mrr
-              << " " << hits[1]
-              << " " << hits[10]
-              << " " << hits[30]
-              << " " << hits[50]
+              << " " << hits.at(1)
+              << " " << hits.at(10)
+              << " " << hits.at(30)
+              << " " << hits.at(50)
               << std::endl;
 
     destroy_cuda_csr(intra_rwr2_masked_sddmm);

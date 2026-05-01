@@ -80,8 +80,8 @@ __global__ void exp_inplace_kernel(double* data, size_t total) {
     }
 }
 
-__global__ void anchor_cost_zero_kernel(double* matrix, MKL_INT nrows, const MKL_INT* rows, const MKL_INT* cols, MKL_INT k, double val) {
-    const MKL_INT idx = static_cast<MKL_INT>(blockIdx.x) * blockDim.x + threadIdx.x;
+__global__ void anchor_cost_zero_kernel(double* matrix, int nrows, const int* rows, const int* cols, int k, double val) {
+    const int idx = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < k) {
         const size_t offset = static_cast<size_t>(cols[idx]) * static_cast<size_t>(nrows) + static_cast<size_t>(rows[idx]);
         matrix[offset] = val;
@@ -808,18 +808,18 @@ void get_normalized_neg_exp_dist_device(const double* d_rwr1,
 }
 
 void anchor_cost_zero_device(double* d_A,
-                             MKL_INT nrows,
-                             MKL_INT ncols,
-                             const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchors,
+                             int nrows,
+                             int ncols,
+                             const std::pair<std::vector<int>, std::vector<int>>& anchors,
                              double val) {
     (void)ncols;
-    std::vector<MKL_INT> valid_rows;
-    std::vector<MKL_INT> valid_cols;
+    std::vector<int> valid_rows;
+    std::vector<int> valid_cols;
     valid_rows.reserve(anchors.first.size());
     valid_cols.reserve(anchors.second.size());
     for (size_t t = 0; t < anchors.first.size(); ++t) {
-        const MKL_INT i = anchors.first[t];
-        const MKL_INT j = anchors.second[t];
+        const int i = anchors.first[t];
+        const int j = anchors.second[t];
         if (i < 0 || i >= nrows || j < 0 || j >= ncols) {
             printf("error anchor_cost_zero: out-of-range anchor (%d,%d)\n", i, j);
             continue;
@@ -832,23 +832,23 @@ void anchor_cost_zero_device(double* d_A,
         return;
     }
 
-    MKL_INT* d_rows = nullptr;
-    MKL_INT* d_cols = nullptr;
-    const size_t anchor_bytes = valid_rows.size() * sizeof(MKL_INT);
+    int* d_rows = nullptr;
+    int* d_cols = nullptr;
+    const size_t anchor_bytes = valid_rows.size() * sizeof(int);
     CHECK_CUDA(cudaMalloc(&d_rows, anchor_bytes));
     CHECK_CUDA(cudaMalloc(&d_cols, anchor_bytes));
     CHECK_CUDA(cudaMemcpy(d_rows, valid_rows.data(), anchor_bytes, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_cols, valid_cols.data(), anchor_bytes, cudaMemcpyHostToDevice));
 
     const unsigned int blocks = static_cast<unsigned int>((valid_rows.size() + kBlockSize - 1) / kBlockSize);
-    anchor_cost_zero_kernel<<<blocks, kBlockSize>>>(d_A, nrows, d_rows, d_cols, static_cast<MKL_INT>(valid_rows.size()), val);
+    anchor_cost_zero_kernel<<<blocks, kBlockSize>>>(d_A, nrows, d_rows, d_cols, static_cast<int>(valid_rows.size()), val);
     CHECK_CUDA(cudaGetLastError());
 
     CHECK_CUDA(cudaFree(d_cols));
     CHECK_CUDA(cudaFree(d_rows));
 }
 
-void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchors, double val) {
+void anchor_cost_zero(std::vector<double>& A, int nrows, int ncols, const std::pair<std::vector<int>, std::vector<int>>& anchors, double val) {
     if (A.size() != static_cast<size_t>(nrows) * static_cast<size_t>(ncols)) {
         throw std::runtime_error("anchor_cost_zero matrix size mismatch");
     }
@@ -877,7 +877,7 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
                                            double lambda_a,
                                            double lambda_p,
                                            double lambda_e_in,
-                                           const std::pair<std::vector<MKL_INT>, std::vector<MKL_INT>>& anchor_pairs,
+                                           const std::pair<std::vector<int>, std::vector<int>>& anchor_pairs,
                                            bool sparsify) {
     (void)avg_nnz1_per_n1;
     (void)avg_nnz2_per_n2;
@@ -1096,8 +1096,8 @@ CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_p
         graph_row_sum[row] = sum;
     }
 
-    std::vector<MKL_INT> isolated;
-    for (MKL_INT i = 0; i < n; ++i) {
+    std::vector<int> isolated;
+    for (int i = 0; i < n; ++i) {
         if (graph_row_sum[i] < 1e-10) {
             isolated.push_back(i);
         }
@@ -1108,10 +1108,10 @@ CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_p
         DEBUG_ONLY(printf("connecting isolated nodes\n"));
         std::vector<std::vector<int>> add_cols_per_row(static_cast<size_t>(n));
         std::srand(std::time(0));
-        for (MKL_INT i : isolated) {
-            std::set<MKL_INT> random_nodes = {};
+        for (int i : isolated) {
+            std::set<int> random_nodes = {};
             while (random_nodes.size() < static_cast<size_t>(avg_nnz_per_n)) {
-                MKL_INT random_num = std::rand() % n;
+                int random_num = std::rand() % n;
                 if (random_num == i || random_nodes.find(random_num) != random_nodes.end()) continue;
                 random_nodes.insert(random_num);
                 add_cols_per_row[static_cast<size_t>(i)].push_back(static_cast<int>(random_num));

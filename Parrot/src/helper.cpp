@@ -361,12 +361,9 @@ void get_batch_rwr_scores(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> a
     descr.type = SPARSE_MATRIX_TYPE_GENERAL;
     auto time_0 = std::chrono::high_resolution_clock::now();
     int l = anchors.size();
-    //one hot encoding E matrix
-    std::vector<double> E(n * l, 0.0);
-    for (int j = 0; j < l; ++j)         E[ anchors[j] + j * n ] = restart_prob;   // one-hot at (row=anchor[j], col=j)
-    
     //these are column major
-    std::vector<double> X_vals = E;
+    std::vector<double> X_vals((size_t)n * (size_t)l, 0.0);
+    for (int j = 0; j < l; ++j)         X_vals[(size_t)anchors[j] + (size_t)j * (size_t)n] = restart_prob;   // one-hot at (row=anchor[j], col=j)
     auto time_1 = std::chrono::high_resolution_clock::now();
     auto add_after_spmm_time = 0, spmm_time=0, swap_after_spmm_time=0;
     for(int i=0; i < max_iters-1; i++) {
@@ -376,7 +373,7 @@ void get_batch_rwr_scores(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> a
         spmm_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_1 - time_1_0).count();
         if (status != SPARSE_STATUS_SUCCESS) throw std::runtime_error("error spmm");
         // cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, n, l, n,(double) (1-restart_prob), graph_norm_csr_dense.data(), n, X_vals.data(), n, restart_prob, Xnext_vals.data(), n);
-        cblas_daxpy(n * l, 1.0, E.data(), 1, Xnext_vals.data(), 1);
+        for (int j = 0; j < l; ++j)     Xnext_vals[(size_t)anchors[j] + (size_t)j * (size_t)n] += restart_prob;
         auto time_1_2 = std::chrono::high_resolution_clock::now();
         add_after_spmm_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_2 - time_1_1).count();
         std::swap(X_vals, Xnext_vals);
