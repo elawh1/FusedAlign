@@ -40,7 +40,7 @@ std::vector<double> l2_norm(std::vector<double> rwr, int n, int d) ;
 
 void l2_norm_inplace(std::vector<double>& rwr, size_t n, size_t d) ;
 
-void get_normalized_neg_exp_dist (std::vector<double> rwr1, std::vector<double>  rwr2, int n1, int n2, int l, std::vector<double>& cross_rwr_dist) ;
+void get_normalized_neg_exp_dist (const std::vector<double>& rwr1, const std::vector<double>&  rwr2, int n1, int n2, int l, std::vector<double>& cross_rwr_dist) ;
 
 void masked_sddmm_intra_cost (std::vector<double>&  emb, sparse_matrix_t mask, int n, int L, sparse_matrix_t& result) ;
 
@@ -51,6 +51,8 @@ sparse_matrix_t row_normalize_graph( sparse_matrix_t graph, int n, MKL_INT avg_n
 sparse_matrix_t row_normalize_graph_new( sparse_matrix_t graph, int n, MKL_INT avg_nnz_per_n) ;
 
 void get_batch_rwr_scores(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> anchors, MKL_INT n, MKL_INT avg_nnz_per_n, 
+        bool directed, float restart_prob, int max_iters, bool connect_isolated, std::vector<double>& Xnext_vals) ;
+void get_batch_rwr_scores_rowmjr(sparse_matrix_t graph_norm_csr, std::vector<MKL_INT> anchors, MKL_INT n, MKL_INT avg_nnz_per_n, 
         bool directed, float restart_prob, int max_iters, bool connect_isolated, std::vector<double>& Xnext_vals) ;
 
 void anchor_cost_zero(std::vector<double>& A, MKL_INT nrows, MKL_INT ncols, const std::pair<std::vector<MKL_INT>, 
@@ -75,6 +77,8 @@ void get_product_rwr_mat_new( sparse_matrix_t graph1_normalized, sparse_matrix_t
     std::vector<double>& out_cross_dist, int max_iters = 50, double tol = 1e-2) ;
 
 void minaa_v3_dense( std::vector<double>& Cost, const std::vector<double>& b, int n_row, int n_col, double epsilon, std::vector<double>& out_vec ) ;
+
+void minaa_v3_dense_old( std::vector<double>& Cost, const std::vector<double>& b, int n_row, int n_col, double epsilon, std::vector<double>& out_vec ) ;
 
 void euclidean_distance_mat_vec( const std::vector<double>& X, const std::vector<double>& y, int n, int d, std::vector<double>& out_vec ) ;
 
@@ -106,8 +110,7 @@ void compute_cost_fused( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm
 
 
 void compute_cost_fused_2( sparse_matrix_t row_norm_adj1, sparse_matrix_t row_norm_adj2, const std::vector<double>& S, int n1, int n2,  sparse_matrix_t intra_dist1, 
-        sparse_matrix_t intra_dist2, const std::vector<double>& C_fixed, double lambda_e, double lambda_n, std::vector<double>& C) ;
-
+        sparse_matrix_t intra_dist2, const std::vector<double>& C_fixed, double lambda_e, double lambda_n, std::vector<double>& C, std::vector<double>& buffer, std::vector<double>& buffer2) ;
 
 double update_S_mat (std::vector<double>& S, const std::vector<double>& S_old, const std::vector<double>& Cost, const std::vector<double>& a_row, const std::vector<double>& b_col, int n1, int n2, double epsilon) ;
 
