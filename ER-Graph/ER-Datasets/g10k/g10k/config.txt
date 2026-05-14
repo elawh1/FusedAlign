@@ -1,0 +1,6 @@
+g1_num_nodes=10000
+g2_num_nodes=10000
+use_attr=0
+outer_iter=10
+inner_iter=5
+directed=1
