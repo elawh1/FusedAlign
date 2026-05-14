@@ -27,7 +27,6 @@ __global__ void abs_diff_block_max_kernel(const double* a, const double* b, size
 
 __global__ void write_restart_entries_kernel(double* x,
                                              const int* anchors,
-                                             int n,
                                              int l,
                                              double restart_prob) {
     const int j = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -35,13 +34,12 @@ __global__ void write_restart_entries_kernel(double* x,
         return;
     }
 
-    const size_t offset = static_cast<size_t>(anchors[j]) + static_cast<size_t>(j) * static_cast<size_t>(n);
+    const size_t offset = static_cast<size_t>(anchors[j]) * static_cast<size_t>(l) + static_cast<size_t>(j);
     x[offset] = restart_prob;
 }
 
 __global__ void add_restart_entries_kernel(double* x,
                                            const int* anchors,
-                                           int n,
                                            int l,
                                            double restart_prob) {
     const int j = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -49,8 +47,23 @@ __global__ void add_restart_entries_kernel(double* x,
         return;
     }
 
-    const size_t offset = static_cast<size_t>(anchors[j]) + static_cast<size_t>(j) * static_cast<size_t>(n);
+    const size_t offset = static_cast<size_t>(anchors[j]) * static_cast<size_t>(l) + static_cast<size_t>(j);
     x[offset] += restart_prob;
+}
+
+__global__ void row_major_to_col_major_kernel(const double* in,
+                                              int rows,
+                                              int cols,
+                                              double* out) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    if (idx >= total) {
+        return;
+    }
+
+    const int row = static_cast<int>(idx / static_cast<size_t>(cols));
+    const int col = static_cast<int>(idx % static_cast<size_t>(cols));
+    out[static_cast<size_t>(row) + static_cast<size_t>(col) * static_cast<size_t>(rows)] = in[idx];
 }
 
 void ensure_batch_rwr_handles(BatchRwrContext& context) {
@@ -106,16 +119,16 @@ void ensure_batch_rwr_dense_mats(BatchRwrContext& context, int n, int l) {
     reset_batch_rwr_dense_mats(context);
     CHECK_CUSPARSE(cusparseCreateDnMat(
         &context.mat_x,
-        n, l, n,
+        n, l, l,
         context.d_x,
         CUDA_R_64F,
-        CUSPARSE_ORDER_COL));
+        CUSPARSE_ORDER_ROW));
     CHECK_CUSPARSE(cusparseCreateDnMat(
         &context.mat_xnext,
-        n, l, n,
+        n, l, l,
         context.d_xnext,
         CUDA_R_64F,
-        CUSPARSE_ORDER_COL));
+        CUSPARSE_ORDER_ROW));
     context.current_n = n;
     context.current_l = l;
 }
@@ -168,13 +181,11 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const int call_id = ++batch_rwr_call_counter;
 #endif
 
-    const int rows = static_cast<int>(n);
-    const int cols = static_cast<int>(n);
-    const int nnz = graph.nnz;
     const int l = static_cast<int>(anchors.size());
     const size_t dense_elems = static_cast<size_t>(n) * static_cast<size_t>(l);
     const int total_updates = std::max(0, max_iters - 1);
     const unsigned int anchor_blocks = static_cast<unsigned int>((static_cast<unsigned int>(l) + 255U) / 256U);
+    const ParrotSpmmAlgorithm spmm_alg = select_parrot_spmm_algorithm("PARROT_RWR_SPMM_ALG");
 
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
@@ -216,7 +227,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     CHECK_CUDA(cudaMemset(context.d_xnext, 0, dense_elems * sizeof(double)));
     if (anchor_blocks > 0) {
         write_restart_entries_kernel<<<anchor_blocks, 256>>>(
-            context.d_x, context.d_anchors, n, l, static_cast<double>(restart_prob));
+            context.d_x, context.d_anchors, l, static_cast<double>(restart_prob));
         CHECK_CUDA(cudaGetLastError());
     }
 #ifdef DEBUG
@@ -231,16 +242,8 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         context.mat_a = nullptr;
     }
 
-    CHECK_CUSPARSE(cusparseCreateCsr(
-        &context.mat_a,
-        rows, cols, nnz,
-        graph.d_row_offsets,
-        graph.d_col_ind,
-        graph.d_vals,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUDA_R_64F));
+    CudaSpMatView mat_a_view = create_spmm_matrix_view(graph);
+    context.mat_a = mat_a_view.descr;
 #ifdef DEBUG
     const auto spmat_setup_end = Clock::now();
 #endif
@@ -262,7 +265,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         &beta,
         context.mat_xnext,
         CUDA_R_64F,
-        CUSPARSE_SPMM_ALG_DEFAULT,
+        spmm_alg.value,
         &bufferSize));
 
 #ifdef DEBUG
@@ -279,7 +282,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         &beta,
         context.mat_xnext,
         CUDA_R_64F,
-        CUSPARSE_SPMM_ALG_DEFAULT,
+        spmm_alg.value,
         context.d_buffer));
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
@@ -306,7 +309,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
             &beta,
             context.mat_xnext,
             CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
+            spmm_alg.value,
             context.d_buffer));
 
 #ifdef DEBUG
@@ -318,7 +321,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
 #endif
         if (anchor_blocks > 0) {
             add_restart_entries_kernel<<<anchor_blocks, 256>>>(
-                context.d_xnext, context.d_anchors, n, l, static_cast<double>(restart_prob));
+                context.d_xnext, context.d_anchors, l, static_cast<double>(restart_prob));
             CHECK_CUDA(cudaGetLastError());
         }
 
@@ -346,14 +349,18 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
 
     const auto output_copy_start = Clock::now();
 #endif
-    CHECK_CUDA(cudaMemcpy(d_X_out, context.d_x, dense_elems * sizeof(double), cudaMemcpyDeviceToDevice));
+    if (dense_elems > 0) {
+        const unsigned int transpose_blocks = static_cast<unsigned int>((dense_elems + 255) / 256);
+        row_major_to_col_major_kernel<<<transpose_blocks, 256>>>(context.d_x, n, l, d_X_out);
+        CHECK_CUDA(cudaGetLastError());
+    }
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
     const auto output_copy_end = Clock::now();
 
     DEBUG_ONLY(std::cout
         << "batch RWR call " << call_id
-        << " (n=" << n << ", l=" << l << ", nnz=" << nnz << ")\n"
+        << " (n=" << n << ", l=" << l << ", nnz=" << graph.nnz << ")\n"
         << "  seed build: " << elapsed_ms(seed_build_start, seed_build_end) << " ms\n"
         << "  context setup: " << elapsed_ms(context_setup_start, context_setup_end) << " ms"
         << " [handles=" << (reused_handles ? "reused" : "new")
@@ -365,6 +372,8 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         << " [mat_a=" << (recreated_mat_a ? "recreated" : "created") << "]\n"
         << "  spmm preprocess: " << elapsed_ms(preprocess_start, preprocess_end) << " ms"
         << " [workspace=" << (reused_workspace ? "reused" : "resized") << ", bytes=" << bufferSize << "]\n"
+        << "  spmm alg: " << spmm_alg.name << "\n"
+        << "  dense order: row_major\n"
         << "  iteration loop: " << elapsed_ms(iter_loop_start, iter_loop_end) << " ms\n"
         << "    spmm: " << iter_spmm_time << " ms\n"
         << "    add sparse restart: " << iter_add_time << " ms\n"
@@ -441,33 +450,15 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
     CHECK_CUSPARSE(cusparseCreate(&sp_handle));
     CHECK_CUBLAS(cublasCreate(&blas_handle));
 
-    cusparseSpMatDescr_t G1 = nullptr, G2 = nullptr;
+    const ParrotSpmmAlgorithm spmm_alg = select_parrot_spmm_algorithm("PARROT_CROSS_SPMM_ALG");
+    DEBUG_ONLY(std::cout << "cross propagation spmm alg: " << spmm_alg.name << std::endl);
+    CudaSpMatView G1 = create_spmm_matrix_view(graph1_normalized);
+    CudaSpMatView G2 = create_spmm_matrix_view(graph2_normalized);
+
     cusparseDnMatDescr_t out_cross_dist_old_t_n2xn1 = nullptr;
     cusparseDnMatDescr_t temp_t_n2xn1 = nullptr;
     cusparseDnMatDescr_t temp_n1xn2 = nullptr;
     cusparseDnMatDescr_t out_cross_dist_n1xn2 = nullptr;
-
-    CHECK_CUSPARSE(cusparseCreateCsr(
-        &G1,
-        graph1_normalized.rows, graph1_normalized.cols, graph1_normalized.nnz,
-        graph1_normalized.d_row_offsets,
-        graph1_normalized.d_col_ind,
-        graph1_normalized.d_vals,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUDA_R_64F));
-
-    CHECK_CUSPARSE(cusparseCreateCsr(
-        &G2,
-        graph2_normalized.rows, graph2_normalized.cols, graph2_normalized.nnz,
-        graph2_normalized.d_row_offsets,
-        graph2_normalized.d_col_ind,
-        graph2_normalized.d_vals,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUDA_R_64F));
 
     // Row-major n2 x n1 view over out_cross_dist_old storage, equivalent to out_cross_dist_old^T.
     CHECK_CUSPARSE(cusparseCreateDnMat(
@@ -495,12 +486,12 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G2,
+            G2.descr,
             out_cross_dist_old_t_n2xn1,
             &beta,
             temp_t_n2xn1,
             CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
+            spmm_alg.value,
             &spmm1_buffer_size));
 
         CHECK_CUDA(cudaMalloc(&d_spmm1_buffer, spmm1_buffer_size));
@@ -510,12 +501,12 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G2,
+            G2.descr,
             out_cross_dist_old_t_n2xn1,
             &beta,
             temp_t_n2xn1,
             CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
+            spmm_alg.value,
             d_spmm1_buffer));
     }
 
@@ -528,12 +519,12 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G1,
+            G1.descr,
             temp_n1xn2,
             &beta,
             out_cross_dist_n1xn2,
             CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
+            spmm_alg.value,
             &spmm2_buffer_size));
 
         CHECK_CUDA(cudaMalloc(&d_spmm2_buffer, spmm2_buffer_size));
@@ -543,12 +534,12 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G1,
+            G1.descr,
             temp_n1xn2,
             &beta,
             out_cross_dist_n1xn2,
             CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
+            spmm_alg.value,
             d_spmm2_buffer));
     }
 
@@ -563,12 +554,12 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 &alpha,
-                G2,
+                G2.descr,
                 out_cross_dist_old_t_n2xn1,
                 &beta,
                 temp_t_n2xn1,
                 CUDA_R_64F,
-                CUSPARSE_SPMM_ALG_DEFAULT,
+                spmm_alg.value,
                 d_spmm1_buffer));
         }
 
@@ -581,12 +572,12 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 &alpha,
-                G1,
+                G1.descr,
                 temp_n1xn2,
                 &beta,
                 out_cross_dist_n1xn2,
                 CUDA_R_64F,
-                CUSPARSE_SPMM_ALG_DEFAULT,
+                spmm_alg.value,
                 d_spmm2_buffer));
         }
 
@@ -625,8 +616,8 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
     CHECK_CUSPARSE(cusparseDestroyDnMat(temp_t_n2xn1));
     CHECK_CUSPARSE(cusparseDestroyDnMat(out_cross_dist_old_t_n2xn1));
 
-    CHECK_CUSPARSE(cusparseDestroySpMat(G2));
-    CHECK_CUSPARSE(cusparseDestroySpMat(G1));
+    destroy_spmm_matrix_view(G2);
+    destroy_spmm_matrix_view(G1);
 
     CHECK_CUSPARSE(cusparseDestroy(sp_handle));
     CHECK_CUBLAS(cublasDestroy(blas_handle));

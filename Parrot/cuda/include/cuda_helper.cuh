@@ -72,6 +72,37 @@ do {                                                                            
     }                                                                            \
 }
 
+struct ParrotSpmmAlgorithm {
+    cusparseSpMMAlg_t value;
+    const char* name;
+};
+
+inline ParrotSpmmAlgorithm select_parrot_spmm_algorithm(const char* env_name) {
+    const char* env_value = std::getenv(env_name);
+    if (env_value == nullptr || env_value[0] == '\0') {
+        return {CUSPARSE_SPMM_ALG_DEFAULT, "default"};
+    }
+
+    const std::string alg(env_value);
+    if (alg == "default") {
+        return {CUSPARSE_SPMM_ALG_DEFAULT, "default"};
+    }
+    if (alg == "csr_alg1" || alg == "alg1" || alg == "1") {
+        return {CUSPARSE_SPMM_CSR_ALG1, "csr_alg1"};
+    }
+    if (alg == "csr_alg2" || alg == "alg2" || alg == "2") {
+        return {CUSPARSE_SPMM_CSR_ALG2, "csr_alg2"};
+    }
+    if (alg == "csr_alg3" || alg == "alg3" || alg == "3") {
+        return {CUSPARSE_SPMM_CSR_ALG3, "csr_alg3"};
+    }
+
+    std::cerr << "Unknown " << env_name << "='" << alg
+              << "', using default. Expected default, csr_alg1, csr_alg2, or csr_alg3."
+              << std::endl;
+    return {CUSPARSE_SPMM_ALG_DEFAULT, "default"};
+}
+
 struct CudaCsrMatrix {
     int rows = 0;
     int cols = 0;
@@ -79,6 +110,10 @@ struct CudaCsrMatrix {
     int* d_row_offsets = nullptr;
     int* d_col_ind = nullptr;
     double* d_vals = nullptr;
+    cusparseSpMatDescr_t descr = nullptr;
+};
+
+struct CudaSpMatView {
     cusparseSpMatDescr_t descr = nullptr;
 };
 
@@ -103,6 +138,8 @@ void destroy_cuda_csr(CudaCsrMatrix& matrix);
 CudaCsrMatrix make_cuda_csr_from_edgelist(const std::vector<double>& edgelist, int m, int n);
 CudaCsrMatrix transpose_cuda_csr(const CudaCsrMatrix& matrix);
 CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_per_n);
+CudaSpMatView create_spmm_matrix_view(const CudaCsrMatrix& matrix);
+void destroy_spmm_matrix_view(CudaSpMatView& view);
 void destroy_batch_rwr_context(BatchRwrContext& context);
 
 void load_config(const std::string& data_path, int& g1_num_nodes, int& g2_num_nodes,

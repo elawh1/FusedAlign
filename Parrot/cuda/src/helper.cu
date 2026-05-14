@@ -283,6 +283,30 @@ CudaCsrMatrix transpose_cuda_csr(const CudaCsrMatrix& matrix) {
     return transpose_cuda_csr_impl(matrix);
 }
 
+CudaSpMatView create_spmm_matrix_view(const CudaCsrMatrix& matrix) {
+    CudaSpMatView view;
+    CHECK_CUSPARSE(cusparseCreateCsr(&view.descr,
+                                     matrix.rows,
+                                     matrix.cols,
+                                     matrix.nnz,
+                                     matrix.d_row_offsets,
+                                     matrix.d_col_ind,
+                                     matrix.d_vals,
+                                     CUSPARSE_INDEX_32I,
+                                     CUSPARSE_INDEX_32I,
+                                     CUSPARSE_INDEX_BASE_ZERO,
+                                     CUDA_R_64F));
+
+    return view;
+}
+
+void destroy_spmm_matrix_view(CudaSpMatView& view) {
+    if (view.descr != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroySpMat(view.descr));
+        view.descr = nullptr;
+    }
+}
+
 std::vector<double> init_Hlog_with_anchors(int nrows,
                                            int ncols,
                                            const std::pair<std::vector<int>, std::vector<int>>& anchors) {
@@ -322,6 +346,41 @@ __global__ void fuse_cost_terms_kernel(const double* buffer2,
     if (idx < total) {
         out[idx] = buffer2[idx] - lambda_n * log_buffer[idx] + c_fixed[idx];
     }
+}
+
+__global__ void col_major_to_row_major_kernel(const double* in,
+                                              int rows,
+                                              int cols,
+                                              double* out) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    if (idx >= total) {
+        return;
+    }
+
+    const int row = static_cast<int>(idx % static_cast<size_t>(rows));
+    const int col = static_cast<int>(idx / static_cast<size_t>(rows));
+    out[static_cast<size_t>(row) * static_cast<size_t>(cols) + static_cast<size_t>(col)] = in[idx];
+}
+
+__global__ void fuse_cost_terms_row_major_buffers_kernel(const double* buffer2_row_major,
+                                                         const double* buffer_row_major,
+                                                         const double* c_fixed_col_major,
+                                                         double lambda_n,
+                                                         int n1,
+                                                         int n2,
+                                                         double* out_col_major) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    if (idx >= total) {
+        return;
+    }
+
+    const int row = static_cast<int>(idx % static_cast<size_t>(n1));
+    const int col = static_cast<int>(idx / static_cast<size_t>(n1));
+    const size_t row_major_idx = static_cast<size_t>(row) * static_cast<size_t>(n2) + static_cast<size_t>(col);
+    const double clamped = buffer_row_major[row_major_idx] > 1e-15 ? buffer_row_major[row_major_idx] : 1e-15;
+    out_col_major[idx] = buffer2_row_major[row_major_idx] - lambda_n * log(clamped) + c_fixed_col_major[idx];
 }
 
 __global__ void update_s_kernel(double* s,
@@ -411,6 +470,26 @@ __global__ void minaa_v3_dense_kernel(const double* cost,
     if (threadIdx.x == 0) {
         out_vec[col_idx] = min_value - epsilon * log(shared_sum[0] / static_cast<double>(n_row));
     }
+}
+
+bool select_cost_graph1_row_major() {
+    const char* env_value = std::getenv("PARROT_COST_DENSE_ORDER");
+    if (env_value == nullptr || env_value[0] == '\0') {
+        return false;
+    }
+
+    const std::string order(env_value);
+    if (order == "col" || order == "col_major" || order == "column" || order == "column_major") {
+        return false;
+    }
+    if (order == "row" || order == "row_major") {
+        return true;
+    }
+
+    std::cerr << "Unknown PARROT_COST_DENSE_ORDER='" << order
+              << "', using col_major. Expected col_major or row_major."
+              << std::endl;
+    return false;
 }
 
 __global__ void csr_row_avg_square_kernel(const int* row_offsets,
@@ -532,12 +611,24 @@ struct ComputeCostContext {
     cusparseDnMatDescr_t cost_col_major = nullptr;
     cusparseDnMatDescr_t buffer_col_major = nullptr;
     cusparseDnMatDescr_t buffer2_col_major = nullptr;
+    cusparseDnMatDescr_t cost_graph1_row_major = nullptr;
+    cusparseDnMatDescr_t buffer_row_major = nullptr;
+    cusparseDnMatDescr_t buffer2_row_major = nullptr;
+    CudaSpMatView intra_dist2_view;
+    CudaSpMatView intra_dist1_view;
+    CudaSpMatView row_norm_adj2_view;
+    CudaSpMatView row_norm_adj1_view;
+    double* d_cost_graph1_row_major = nullptr;
     void* d_workspace_1 = nullptr;
     void* d_workspace_2 = nullptr;
     void* d_workspace_3 = nullptr;
     void* d_workspace_4 = nullptr;
     double alpha_neg2_lambda_e = 0.0;
     size_t matrix_size = 0;
+    int n1 = 0;
+    int n2 = 0;
+    bool use_row_major_graph1 = false;
+    ParrotSpmmAlgorithm spmm_alg = {CUSPARSE_SPMM_ALG_DEFAULT, "default"};
 };
 
 void destroy_compute_cost_context(ComputeCostContext& context) {
@@ -561,13 +652,25 @@ void destroy_compute_cost_context(ComputeCostContext& context) {
         CHECK_CUSPARSE(cusparseDestroyDnMat(context.buffer2_col_major));
         context.buffer2_col_major = nullptr;
     }
+    if (context.buffer2_row_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.buffer2_row_major));
+        context.buffer2_row_major = nullptr;
+    }
     if (context.buffer_col_major != nullptr) {
         CHECK_CUSPARSE(cusparseDestroyDnMat(context.buffer_col_major));
         context.buffer_col_major = nullptr;
     }
+    if (context.buffer_row_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.buffer_row_major));
+        context.buffer_row_major = nullptr;
+    }
     if (context.cost_col_major != nullptr) {
         CHECK_CUSPARSE(cusparseDestroyDnMat(context.cost_col_major));
         context.cost_col_major = nullptr;
+    }
+    if (context.cost_graph1_row_major != nullptr) {
+        CHECK_CUSPARSE(cusparseDestroyDnMat(context.cost_graph1_row_major));
+        context.cost_graph1_row_major = nullptr;
     }
     if (context.cost_row_major != nullptr) {
         CHECK_CUSPARSE(cusparseDestroyDnMat(context.cost_row_major));
@@ -577,8 +680,20 @@ void destroy_compute_cost_context(ComputeCostContext& context) {
         CHECK_CUSPARSE(cusparseDestroyDnMat(context.s_row_major));
         context.s_row_major = nullptr;
     }
+    if (context.d_cost_graph1_row_major != nullptr) {
+        CHECK_CUDA(cudaFree(context.d_cost_graph1_row_major));
+        context.d_cost_graph1_row_major = nullptr;
+    }
+    destroy_spmm_matrix_view(context.row_norm_adj1_view);
+    destroy_spmm_matrix_view(context.row_norm_adj2_view);
+    destroy_spmm_matrix_view(context.intra_dist1_view);
+    destroy_spmm_matrix_view(context.intra_dist2_view);
     context.alpha_neg2_lambda_e = 0.0;
     context.matrix_size = 0;
+    context.n1 = 0;
+    context.n2 = 0;
+    context.use_row_major_graph1 = false;
+    context.spmm_alg = {CUSPARSE_SPMM_ALG_DEFAULT, "default"};
 }
 
 void initialize_compute_cost_context(ComputeCostContext& context,
@@ -597,12 +712,35 @@ void initialize_compute_cost_context(ComputeCostContext& context,
     destroy_compute_cost_context(context);
     context.alpha_neg2_lambda_e = -2.0 * lambda_e;
     context.matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    context.n1 = n1;
+    context.n2 = n2;
+    context.spmm_alg = select_parrot_spmm_algorithm("PARROT_COST_SPMM_ALG");
+    context.use_row_major_graph1 = select_cost_graph1_row_major();
+    DEBUG_ONLY(std::cout << "optimization cost spmm alg: " << context.spmm_alg.name << std::endl);
+    DEBUG_ONLY(std::cout << "optimization cost graph1 dense order: "
+                         << (context.use_row_major_graph1 ? "row_major" : "col_major")
+                         << std::endl);
+    context.intra_dist2_view = create_spmm_matrix_view(d_intra_dist2);
+    context.intra_dist1_view = create_spmm_matrix_view(d_intra_dist1);
+    context.row_norm_adj2_view = create_spmm_matrix_view(d_row_norm_adj2);
+    context.row_norm_adj1_view = create_spmm_matrix_view(d_row_norm_adj1);
 
     CHECK_CUSPARSE(cusparseCreateDnMat(&context.s_row_major, n2, n1, n1, const_cast<double*>(d_s), CUDA_R_64F, CUSPARSE_ORDER_ROW));
     CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_row_major, n2, n1, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_ROW));
-    CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_col_major, n1, n2, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_COL));
-    CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer_col_major, n1, n2, n1, d_buffer, CUDA_R_64F, CUSPARSE_ORDER_COL));
-    CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer2_col_major, n1, n2, n1, d_buffer2, CUDA_R_64F, CUSPARSE_ORDER_COL));
+    if (context.use_row_major_graph1) {
+        CHECK_CUDA(cudaMalloc(&context.d_cost_graph1_row_major, context.matrix_size * sizeof(double)));
+        CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_graph1_row_major, n1, n2, n2, context.d_cost_graph1_row_major, CUDA_R_64F, CUSPARSE_ORDER_ROW));
+        CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer_row_major, n1, n2, n2, d_buffer, CUDA_R_64F, CUSPARSE_ORDER_ROW));
+        CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer2_row_major, n1, n2, n2, d_buffer2, CUDA_R_64F, CUSPARSE_ORDER_ROW));
+    } else {
+        CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_col_major, n1, n2, n1, d_cost, CUDA_R_64F, CUSPARSE_ORDER_COL));
+        CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer_col_major, n1, n2, n1, d_buffer, CUDA_R_64F, CUSPARSE_ORDER_COL));
+        CHECK_CUSPARSE(cusparseCreateDnMat(&context.buffer2_col_major, n1, n2, n1, d_buffer2, CUDA_R_64F, CUSPARSE_ORDER_COL));
+    }
+
+    cusparseDnMatDescr_t graph1_cost_input = context.use_row_major_graph1 ? context.cost_graph1_row_major : context.cost_col_major;
+    cusparseDnMatDescr_t graph1_buffer_output = context.use_row_major_graph1 ? context.buffer_row_major : context.buffer_col_major;
+    cusparseDnMatDescr_t graph1_buffer2_output = context.use_row_major_graph1 ? context.buffer2_row_major : context.buffer2_col_major;
 
     size_t workspace_1 = 0;
     size_t workspace_2 = 0;
@@ -612,36 +750,36 @@ void initialize_compute_cost_context(ComputeCostContext& context,
     const double beta_zero = 0.0;
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_intra_dist2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_1));
+                                           &alpha_one, context.intra_dist2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                           CUDA_R_64F, context.spmm_alg.value, &workspace_1));
     CHECK_CUDA(cudaMalloc(&context.d_workspace_1, workspace_1));
     CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_intra_dist2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_1));
+                                           &alpha_one, context.intra_dist2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                           CUDA_R_64F, context.spmm_alg.value, context.d_workspace_1));
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &context.alpha_neg2_lambda_e, d_intra_dist1.descr, context.cost_col_major, &beta_zero, context.buffer2_col_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_2));
+                                           &context.alpha_neg2_lambda_e, context.intra_dist1_view.descr, graph1_cost_input, &beta_zero, graph1_buffer2_output,
+                                           CUDA_R_64F, context.spmm_alg.value, &workspace_2));
     CHECK_CUDA(cudaMalloc(&context.d_workspace_2, workspace_2));
     CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &context.alpha_neg2_lambda_e, d_intra_dist1.descr, context.cost_col_major, &beta_zero, context.buffer2_col_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_2));
+                                           &context.alpha_neg2_lambda_e, context.intra_dist1_view.descr, graph1_cost_input, &beta_zero, graph1_buffer2_output,
+                                           CUDA_R_64F, context.spmm_alg.value, context.d_workspace_2));
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_row_norm_adj2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_3));
+                                           &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                           CUDA_R_64F, context.spmm_alg.value, &workspace_3));
     CHECK_CUDA(cudaMalloc(&context.d_workspace_3, workspace_3));
     CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_row_norm_adj2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_3));
+                                           &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                           CUDA_R_64F, context.spmm_alg.value, context.d_workspace_3));
 
     CHECK_CUSPARSE(cusparseSpMM_bufferSize(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_row_norm_adj1.descr, context.cost_col_major, &beta_zero, context.buffer_col_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, &workspace_4));
+                                           &alpha_one, context.row_norm_adj1_view.descr, graph1_cost_input, &beta_zero, graph1_buffer_output,
+                                           CUDA_R_64F, context.spmm_alg.value, &workspace_4));
     CHECK_CUDA(cudaMalloc(&context.d_workspace_4, workspace_4));
     CHECK_CUSPARSE(cusparseSpMM_preprocess(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                           &alpha_one, d_row_norm_adj1.descr, context.cost_col_major, &beta_zero, context.buffer_col_major,
-                                           CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_4));
+                                           &alpha_one, context.row_norm_adj1_view.descr, graph1_cost_input, &beta_zero, graph1_buffer_output,
+                                           CUDA_R_64F, context.spmm_alg.value, context.d_workspace_4));
 }
 
 void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
@@ -657,27 +795,44 @@ void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
                                       double* d_buffer2) {
     const double alpha_one = 1.0;
     const double beta_zero = 0.0;
-
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, d_intra_dist2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_1));
-
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &context.alpha_neg2_lambda_e, d_intra_dist1.descr, context.cost_col_major, &beta_zero, context.buffer2_col_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_2));
-
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, d_row_norm_adj2.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_3));
-
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, d_row_norm_adj1.descr, context.cost_col_major, &beta_zero, context.buffer_col_major,
-                                CUDA_R_64F, CUSPARSE_SPMM_ALG_DEFAULT, context.d_workspace_4));
-
     const unsigned int blocks = static_cast<unsigned int>((context.matrix_size + kBlockSize - 1) / kBlockSize);
-    log_floor_inplace_kernel<<<blocks, kBlockSize>>>(d_buffer, context.matrix_size, 1e-15);
-    CHECK_CUDA(cudaGetLastError());
-    fuse_cost_terms_kernel<<<blocks, kBlockSize>>>(d_buffer2, d_buffer, d_c_fixed, lambda_n, context.matrix_size, d_cost);
+
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, context.intra_dist2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                CUDA_R_64F, context.spmm_alg.value, context.d_workspace_1));
+
+    if (context.use_row_major_graph1) {
+        col_major_to_row_major_kernel<<<blocks, kBlockSize>>>(d_cost, context.n1, context.n2, context.d_cost_graph1_row_major);
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &context.alpha_neg2_lambda_e, context.intra_dist1_view.descr, context.cost_graph1_row_major, &beta_zero, context.buffer2_row_major,
+                                    CUDA_R_64F, context.spmm_alg.value, context.d_workspace_2));
+    } else {
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &context.alpha_neg2_lambda_e, context.intra_dist1_view.descr, context.cost_col_major, &beta_zero, context.buffer2_col_major,
+                                    CUDA_R_64F, context.spmm_alg.value, context.d_workspace_2));
+    }
+
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                CUDA_R_64F, context.spmm_alg.value, context.d_workspace_3));
+
+    if (context.use_row_major_graph1) {
+        col_major_to_row_major_kernel<<<blocks, kBlockSize>>>(d_cost, context.n1, context.n2, context.d_cost_graph1_row_major);
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &alpha_one, context.row_norm_adj1_view.descr, context.cost_graph1_row_major, &beta_zero, context.buffer_row_major,
+                                    CUDA_R_64F, context.spmm_alg.value, context.d_workspace_4));
+        fuse_cost_terms_row_major_buffers_kernel<<<blocks, kBlockSize>>>(
+            d_buffer2, d_buffer, d_c_fixed, lambda_n, context.n1, context.n2, d_cost);
+    } else {
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &alpha_one, context.row_norm_adj1_view.descr, context.cost_col_major, &beta_zero, context.buffer_col_major,
+                                    CUDA_R_64F, context.spmm_alg.value, context.d_workspace_4));
+        log_floor_inplace_kernel<<<blocks, kBlockSize>>>(d_buffer, context.matrix_size, 1e-15);
+        CHECK_CUDA(cudaGetLastError());
+        fuse_cost_terms_kernel<<<blocks, kBlockSize>>>(d_buffer2, d_buffer, d_c_fixed, lambda_n, context.matrix_size, d_cost);
+    }
     CHECK_CUDA(cudaGetLastError());
 }
 
