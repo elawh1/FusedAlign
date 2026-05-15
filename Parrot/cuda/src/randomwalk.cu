@@ -163,6 +163,32 @@ void ensure_batch_rwr_anchor_capacity(BatchRwrContext& context, size_t required_
     }
 }
 
+bool cross_timing_enabled() {
+#ifdef DEBUG
+    return true;
+#else
+    return false;
+#endif
+}
+
+using CrossClock = std::chrono::high_resolution_clock;
+
+CrossClock::time_point cross_timing_now(bool enabled) {
+    if (enabled) {
+        CHECK_CUDA(cudaDeviceSynchronize());
+    }
+    return CrossClock::now();
+}
+
+long long cross_timing_elapsed_ms(bool enabled, const CrossClock::time_point& start) {
+    if (!enabled) {
+        return 0;
+    }
+    CHECK_CUDA(cudaDeviceSynchronize());
+    const auto end = CrossClock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
+
 }
 
 void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors, int n, float restart_prob, int max_iters, double* d_X_out, BatchRwrContext& context) {
@@ -424,6 +450,25 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                                          double* d_out_cross_dist_result,
                                          int max_iters, double tol) {
     const size_t N = static_cast<size_t>(n1) * static_cast<size_t>(n2);
+    const ParrotSpmmAlgorithm spmm_alg = select_parrot_spmm_algorithm("PARROT_CROSS_SPMM_ALG");
+    DEBUG_ONLY(std::cout << "cross propagation spmm alg: " << spmm_alg.name << std::endl);
+    DEBUG_ONLY(std::cout << "cross propagation dense order: mixed_col_major" << std::endl);
+
+    const bool timing_enabled = cross_timing_enabled();
+    const auto total_start = cross_timing_now(timing_enabled);
+    long long allocation_ms = 0;
+    long long setup_ms = 0;
+    long long preprocess_ms = 0;
+    long long loop_spmm1_ms = 0;
+    long long loop_spmm2_ms = 0;
+    long long loop_restart_ms = 0;
+    long long loop_diff_ms = 0;
+    long long loop_swap_ms = 0;
+    long long final_copy_ms = 0;
+    long long cleanup_ms = 0;
+    int iterations_run = 0;
+    auto section_start = cross_timing_now(timing_enabled);
+
     double* d_out_cross_dist_old = d_out_cross_dist_result;
     double* d_out_cross_dist = nullptr;
     double* d_out_cross_dist_work = nullptr;
@@ -438,14 +483,14 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
 
     CHECK_CUDA(cudaMemset(d_out_cross_dist_old, 0, N * sizeof(double)));
     CHECK_CUDA(cudaMemset(d_temp, 0, N * sizeof(double)));
+    allocation_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
+    section_start = cross_timing_now(timing_enabled);
     cusparseHandle_t sp_handle = nullptr;
     cublasHandle_t blas_handle = nullptr;
     CHECK_CUSPARSE(cusparseCreate(&sp_handle));
     CHECK_CUBLAS(cublasCreate(&blas_handle));
 
-    const ParrotSpmmAlgorithm spmm_alg = select_parrot_spmm_algorithm("PARROT_CROSS_SPMM_ALG");
-    DEBUG_ONLY(std::cout << "cross propagation spmm alg: " << spmm_alg.name << std::endl);
     CudaSpMatView G1 = create_spmm_matrix_view(graph1_normalized);
     CudaSpMatView G2 = create_spmm_matrix_view(graph2_normalized);
 
@@ -466,11 +511,13 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
     // Column-major view of out_cross_dist.
     CHECK_CUSPARSE(cusparseCreateDnMat(
         &out_cross_dist_n1xn2, n1, n2, n1, d_out_cross_dist, CUDA_R_64F, CUSPARSE_ORDER_COL));
+    setup_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
     void* d_spmm1_buffer = nullptr;
     void* d_spmm2_buffer = nullptr;
     size_t spmm1_buffer_size = 0, spmm2_buffer_size = 0;
 
+    section_start = cross_timing_now(timing_enabled);
     {
         double alpha = 1.0;
         double beta  = 0.0;
@@ -536,9 +583,11 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
             spmm_alg.value,
             d_spmm2_buffer));
     }
+    preprocess_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
     double* d_out_cross_dist_final = d_out_cross_dist_old;
     for (int i = 0; i < max_iters; ++i) {
+        section_start = cross_timing_now(timing_enabled);
         {
             double alpha = 1.0;
             double beta  = 0.0;
@@ -556,7 +605,9 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                 spmm_alg.value,
                 d_spmm1_buffer));
         }
+        loop_spmm1_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
+        section_start = cross_timing_now(timing_enabled);
         {
             double alpha = (1.0 - rwr_restart_prob) * gamma;
             double beta  = 0.0;
@@ -574,10 +625,14 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                 spmm_alg.value,
                 d_spmm2_buffer));
         }
+        loop_spmm2_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
+        section_start = cross_timing_now(timing_enabled);
         const double restart_scale = 1.0 + rwr_restart_prob;
         CHECK_CUBLAS(cublasDaxpy(blas_handle, static_cast<int>(N), &restart_scale, d_in_cross_dist, 1, d_out_cross_dist, 1));
+        loop_restart_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
+        section_start = cross_timing_now(timing_enabled);
         abs_diff_block_max_kernel<<<diff_blocks, 256>>>(d_out_cross_dist, d_out_cross_dist_old, N, d_block_max);
         CHECK_CUDA(cudaGetLastError());
         double max_diff = 0.0;
@@ -586,22 +641,29 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
         if (max_idx > 0) {
             CHECK_CUDA(cudaMemcpy(&max_diff, d_block_max + (max_idx - 1), sizeof(double), cudaMemcpyDeviceToHost));
         }
+        loop_diff_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
         d_out_cross_dist_final = d_out_cross_dist;
+        ++iterations_run;
         if (max_diff < tol) {
             break;
         }
 
+        section_start = cross_timing_now(timing_enabled);
         std::swap(d_out_cross_dist_old, d_out_cross_dist);
         CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_old_t_n2xn1, d_out_cross_dist_old));
         CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_n1xn2, d_out_cross_dist));
         d_out_cross_dist_final = d_out_cross_dist_old;
+        loop_swap_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
     }
+    section_start = cross_timing_now(timing_enabled);
     const double scale = 1.0 - gamma;
     CHECK_CUBLAS(cublasDscal(blas_handle, static_cast<int>(N), &scale, d_out_cross_dist_final, 1));
     if (d_out_cross_dist_final != d_out_cross_dist_result) {
         CHECK_CUDA(cudaMemcpy(d_out_cross_dist_result, d_out_cross_dist_final, N * sizeof(double), cudaMemcpyDeviceToDevice));
     }
+    final_copy_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
+    section_start = cross_timing_now(timing_enabled);
     CHECK_CUDA(cudaFree(d_spmm1_buffer));
     CHECK_CUDA(cudaFree(d_spmm2_buffer));
 
@@ -619,4 +681,28 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
     CHECK_CUDA(cudaFree(d_temp));
     CHECK_CUDA(cudaFree(d_out_cross_dist_work));
     CHECK_CUDA(cudaFree(d_block_max));
+    cleanup_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
+
+    if (timing_enabled) {
+        const long long total_ms = cross_timing_elapsed_ms(timing_enabled, total_start);
+        std::cout << "cross propagation breakdown (mixed_col_major):\n"
+                  << "  allocation/init: " << allocation_ms << " ms\n"
+                  << "  descriptor setup: " << setup_ms << " ms\n"
+                  << "  spmm preprocess: " << preprocess_ms << " ms"
+                  << " [spmm1 bytes=" << spmm1_buffer_size
+                  << ", spmm2 bytes=" << spmm2_buffer_size << "]\n"
+                  << "  loop total: "
+                  << (loop_spmm1_ms + loop_spmm2_ms + loop_restart_ms + loop_diff_ms + loop_swap_ms)
+                  << " ms\n"
+                  << "    graph2 spmm: " << loop_spmm1_ms << " ms\n"
+                  << "    graph1 spmm: " << loop_spmm2_ms << " ms\n"
+                  << "    restart axpy: " << loop_restart_ms << " ms\n"
+                  << "    convergence diff: " << loop_diff_ms << " ms\n"
+                  << "    swap/rebind: " << loop_swap_ms << " ms\n"
+                  << "    iterations executed: " << iterations_run << " / " << max_iters << "\n"
+                  << "  final scale/copy: " << final_copy_ms << " ms\n"
+                  << "  cleanup: " << cleanup_ms << " ms\n"
+                  << "  total inside cross propagation: " << total_ms << " ms"
+                  << std::endl;
+    }
 }
