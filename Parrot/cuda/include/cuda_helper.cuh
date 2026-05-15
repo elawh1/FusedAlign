@@ -146,12 +146,6 @@ void load_config(const std::string& data_path, int& g1_num_nodes, int& g2_num_no
                  bool& use_attr, bool& directed, int& inner_iters, int& outer_iters);
 std::vector<double> readFileToVector(const std::string& filename, bool directed);
 std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(std::vector<double>& H_vec);
-std::vector<double> init_Hlog_with_anchors(int nrows, int ncols,
-                                           const std::pair<std::vector<int>, std::vector<int>>& anchors);
-
-void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors,
-                                          int n, float restart_prob, int max_iters,
-                                          double* d_X_out);
 void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors,
                                           int n, float restart_prob, int max_iters,
                                           double* d_X_out, BatchRwrContext& context);

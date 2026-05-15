@@ -10,7 +10,7 @@ endif
 
 CUDA_TARGET = parrot_cuda
 CUDA_SRC = src/parrot_cuda.cu src/randomwalk.cu src/sddmm.cu \
-           src/helper.cu src/helper2.cu src/accuracy.cu
+           src/helper.cu src/helper2.cu src/optimization.cu src/accuracy.cu
 CUDA_OBJS = $(CUDA_SRC:.cu=.o)
 CUDA_HDR = include/cuda_helper.cuh
 

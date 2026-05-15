@@ -165,12 +165,6 @@ void ensure_batch_rwr_anchor_capacity(BatchRwrContext& context, size_t required_
 
 }
 
-void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors, int n, float restart_prob, int max_iters, double* d_X_out) {
-    BatchRwrContext context;
-    get_batch_rwr_scores_cusparse_device(graph, std::move(anchors), n, restart_prob, max_iters, d_X_out, context);
-    destroy_batch_rwr_context(context);
-}
-
 void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors, int n, float restart_prob, int max_iters, double* d_X_out, BatchRwrContext& context) {
 #ifdef DEBUG
     using Clock = std::chrono::high_resolution_clock;
