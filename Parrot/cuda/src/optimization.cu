@@ -523,7 +523,6 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     CudaCsrMatrix d_row_norm_adj1_tr = transpose_cuda_csr(row_norm_adj1);
 
     double* d_s = nullptr;
-    double* d_s_old = nullptr;
     double* d_cost = nullptr;
     double* d_cost_buff = nullptr;
     double* d_c_fixed = nullptr;
@@ -531,14 +530,12 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     double* d_b_col = nullptr;
     double* d_buffer = nullptr;
     double* d_buffer2 = nullptr;
-    double* d_cost_t = nullptr;
     double* d_h_log = nullptr;
     double* d_row_avg_square_dist1 = nullptr;
     double* d_row_avg_square_dist2 = nullptr;
     double* d_update_block_sums = nullptr;
 
     CHECK_CUDA(cudaMalloc(&d_s, matrix_size * sizeof(double)));
-    CHECK_CUDA(cudaMalloc(&d_s_old, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_cost, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_cost_buff, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_c_fixed, matrix_size * sizeof(double)));
@@ -546,7 +543,6 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     CHECK_CUDA(cudaMalloc(&d_b_col, static_cast<size_t>(n1) * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_buffer, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_buffer2, matrix_size * sizeof(double)));
-    CHECK_CUDA(cudaMalloc(&d_cost_t, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_h_log, matrix_size * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist1, static_cast<size_t>(n1) * sizeof(double)));
     CHECK_CUDA(cudaMalloc(&d_row_avg_square_dist2, static_cast<size_t>(n2) * sizeof(double)));
@@ -601,7 +597,6 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
 
     for (int it = 0; it < outer_iters; ++it) {
         DEBUG_ONLY(printf("----- outer iterration %d ----\n", it));
-        CHECK_CUDA(cudaMemcpy(d_s_old, d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
 
 #ifdef DEBUG
         const auto debug_compute_start = synced_now();
@@ -629,6 +624,8 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
             }
         }
 
+        CHECK_CUDA(cudaMemcpy(d_buffer2, d_s, matrix_size * sizeof(double), cudaMemcpyDeviceToDevice));
+
         apply_log_penalty_kernel<<<blocks_matrix, kBlockSize>>>(d_s, d_cost, matrix_size, lambda_p);
         CHECK_CUDA(cudaGetLastError());
 #ifdef DEBUG
@@ -636,13 +633,13 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
         cost_compute_time += elapsed_ms(debug_compute_end, debug_penalty_end);
 #endif
 
-        run_sinkhorn_iterations_cuda_device(d_cost, n1, n2, inner_iters, lambda_total, d_a_row, d_b_col, d_cost_t, blas_handle.handle);
+        run_sinkhorn_iterations_cuda_device(d_cost, n1, n2, inner_iters, lambda_total, d_a_row, d_b_col, d_buffer, blas_handle.handle);
 #ifdef DEBUG
         const auto debug_sinkhorn_end = synced_now();
         inner_loop += elapsed_ms(debug_penalty_end, debug_sinkhorn_end);
 #endif
 
-        const double diff_s = update_s_device(d_s, d_s_old, d_cost, d_a_row, d_b_col, n1, n2, lambda_total,
+        const double diff_s = update_s_device(d_s, d_buffer2, d_cost, d_a_row, d_b_col, n1, n2, lambda_total,
                                               d_update_block_sums, blas_handle.handle);
 #ifdef DEBUG
         const auto debug_update_end = synced_now();
@@ -662,7 +659,6 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
 
     destroy_compute_cost_context(compute_cost_context);
     if (d_update_block_sums != nullptr) CHECK_CUDA(cudaFree(d_update_block_sums));
-    CHECK_CUDA(cudaFree(d_cost_t));
     CHECK_CUDA(cudaFree(d_buffer2));
     CHECK_CUDA(cudaFree(d_buffer));
     CHECK_CUDA(cudaFree(d_b_col));
@@ -670,7 +666,6 @@ std::vector<double> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_adj1,
     CHECK_CUDA(cudaFree(d_c_fixed));
     CHECK_CUDA(cudaFree(d_cost_buff));
     CHECK_CUDA(cudaFree(d_cost));
-    CHECK_CUDA(cudaFree(d_s_old));
     CHECK_CUDA(cudaFree(d_s));
     destroy_cuda_csr(d_row_norm_adj1_tr);
 
