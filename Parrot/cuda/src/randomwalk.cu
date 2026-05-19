@@ -25,6 +25,27 @@ __global__ void abs_diff_block_max_kernel(const element_type* a, const element_t
     }
 }
 
+// Single-block reduce: collapses block_max[0..n-1] into block_max[0].
+// Launched as <<<1, 256>>>; each thread strides over n elements.
+__global__ void reduce_block_max_to_scalar_kernel(element_type* block_max, unsigned int n) {
+    element_type local_max = static_cast<element_type>(0.0);
+    for (unsigned int i = threadIdx.x; i < n; i += blockDim.x) {
+        local_max = fmax(local_max, block_max[i]);
+    }
+    __shared__ element_type smem[256];
+    smem[threadIdx.x] = local_max;
+    __syncthreads();
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            smem[threadIdx.x] = fmax(smem[threadIdx.x], smem[threadIdx.x + s]);
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        block_max[0] = smem[0];
+    }
+}
+
 __global__ void write_restart_entries_kernel(element_type* x,
                                              const int* anchors,
                                              int l,
@@ -51,19 +72,38 @@ __global__ void add_restart_entries_kernel(element_type* x,
     x[offset] += restart_prob;
 }
 
-__global__ void row_major_to_col_major_kernel(const element_type* in,
+constexpr int kRwrTransposeTileDim = 32;
+constexpr int kRwrTransposeBlockRows = 8;
+
+// Tiled shared-memory transpose: coalesced reads and coalesced writes.
+// Converts row-major (rows x cols) → col-major (rows x cols).
+__global__ void row_major_to_col_major_kernel(const element_type* __restrict__ in,
                                               int rows,
                                               int cols,
-                                              element_type* out) {
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
-    if (idx >= total) {
-        return;
-    }
+                                              element_type* __restrict__ out) {
+    __shared__ element_type smem[kRwrTransposeTileDim][kRwrTransposeTileDim + 1];
 
-    const int row = static_cast<int>(idx / static_cast<size_t>(cols));
-    const int col = static_cast<int>(idx % static_cast<size_t>(cols));
-    out[static_cast<size_t>(row) + static_cast<size_t>(col) * static_cast<size_t>(rows)] = in[idx];
+    const int i_base = static_cast<int>(blockIdx.y) * kRwrTransposeTileDim;
+    const int j_base = static_cast<int>(blockIdx.x) * kRwrTransposeTileDim;
+
+    // Read phase: threadIdx.x strides over cols (j), coalesced reads from row-major.
+    for (int dy = 0; dy < kRwrTransposeTileDim; dy += kRwrTransposeBlockRows) {
+        const int gi = i_base + static_cast<int>(threadIdx.y) + dy;
+        const int gj = j_base + static_cast<int>(threadIdx.x);
+        if (gi < rows && gj < cols) {
+            smem[threadIdx.y + dy][threadIdx.x] = in[static_cast<size_t>(gi) * cols + gj];
+        }
+    }
+    __syncthreads();
+
+    // Write phase: threadIdx.x strides over rows (i), coalesced writes to col-major.
+    for (int dy = 0; dy < kRwrTransposeTileDim; dy += kRwrTransposeBlockRows) {
+        const int gi = i_base + static_cast<int>(threadIdx.x);
+        const int gj = j_base + static_cast<int>(threadIdx.y) + dy;
+        if (gi < rows && gj < cols) {
+            out[static_cast<size_t>(gi) + static_cast<size_t>(gj) * rows] = smem[threadIdx.x][threadIdx.y + dy];
+        }
+    }
 }
 
 void ensure_batch_rwr_handles(BatchRwrContext& context) {
@@ -370,8 +410,11 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const auto output_copy_start = Clock::now();
 #endif
     if (dense_elems > 0) {
-        const unsigned int transpose_blocks = static_cast<unsigned int>((dense_elems + 255) / 256);
-        row_major_to_col_major_kernel<<<transpose_blocks, 256>>>(context.d_x, n, l, d_X_out);
+        const dim3 transpose_block(kRwrTransposeTileDim, kRwrTransposeBlockRows);
+        const dim3 transpose_grid(
+            static_cast<unsigned int>((l + kRwrTransposeTileDim - 1) / kRwrTransposeTileDim),
+            static_cast<unsigned int>((n + kRwrTransposeTileDim - 1) / kRwrTransposeTileDim));
+        row_major_to_col_major_kernel<<<transpose_grid, transpose_block>>>(context.d_x, n, l, d_X_out);
         CHECK_CUDA(cudaGetLastError());
     }
 #ifdef DEBUG
@@ -635,12 +678,10 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
         section_start = cross_timing_now(timing_enabled);
         abs_diff_block_max_kernel<<<diff_blocks, 256>>>(d_out_cross_dist, d_out_cross_dist_old, N, d_block_max);
         CHECK_CUDA(cudaGetLastError());
+        reduce_block_max_to_scalar_kernel<<<1, 256>>>(d_block_max, diff_blocks);
+        CHECK_CUDA(cudaGetLastError());
         element_type max_diff = static_cast<element_type>(0.0);
-        int max_idx = 0;
-        CHECK_CUBLAS(parrot_cublas_iamax(blas_handle, static_cast<int>(diff_blocks), d_block_max, 1, &max_idx));
-        if (max_idx > 0) {
-            CHECK_CUDA(cudaMemcpy(&max_diff, d_block_max + (max_idx - 1), sizeof(element_type), cudaMemcpyDeviceToHost));
-        }
+        CHECK_CUDA(cudaMemcpy(&max_diff, d_block_max, sizeof(element_type), cudaMemcpyDeviceToHost));
         loop_diff_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
         d_out_cross_dist_final = d_out_cross_dist;
         ++iterations_run;

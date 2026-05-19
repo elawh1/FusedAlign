@@ -25,6 +25,9 @@ CUDA_HDR = include/cuda_helper.cuh
 NVLIBS = -L/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/math_libs/12.9/targets/x86_64-linux/lib \
          -lcusparse -lcublas
 
+BENCH_FLAGS = -O3 -std=c++17 \
+    -I/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/include
+
 all: $(CUDA_TARGET)
 
 $(CUDA_TARGET): $(CUDA_OBJS)
@@ -33,5 +36,8 @@ $(CUDA_TARGET): $(CUDA_OBJS)
 %.o: %.cu $(CUDA_HDR)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
+spmm_ell_bench: src/spmm_ell_benchmark.cu
+	$(NVCC) $(BENCH_FLAGS) src/spmm_ell_benchmark.cu -o spmm_ell_bench $(NVLIBS)
+
 clean:
-	rm -f $(CUDA_TARGET) $(CUDA_OBJS)
+	rm -f $(CUDA_TARGET) $(CUDA_OBJS) spmm_ell_bench

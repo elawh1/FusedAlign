@@ -135,21 +135,21 @@ int main(int argc, char* argv[]){
         CHECK_CUDA(PARROT_CUDA_MALLOC(&d_cross_attr_dist, cross_size * sizeof(element_type)));
         get_normalized_neg_exp_dist_device(d_g1_feat, d_g2_feat, g1_num_nodes, g2_num_nodes, static_cast<int>(g1_feat_dim), d_cross_attr_dist);
 
-        cublasHandle_t blend_handle = nullptr;
-        CHECK_CUBLAS(cublasCreate(&blend_handle));
+        cublasHandle_t tmp_handle = nullptr;
+        CHECK_CUBLAS(cublasCreate(&tmp_handle));
         const element_type alpha = static_cast<element_type>(0.5);
-        CHECK_CUBLAS(parrot_cublas_axpy(blend_handle, static_cast<int>(cross_size), &alpha, d_cross_rwr_dist, 1, d_cross_attr_dist, 1));
-        CHECK_CUBLAS(cublasDestroy(blend_handle));
+        CHECK_CUBLAS(parrot_cublas_axpy(tmp_handle, static_cast<int>(cross_size), &alpha, d_cross_rwr_dist, 1, d_cross_attr_dist, 1));
+        CHECK_CUBLAS(cublasDestroy(tmp_handle));
 
         CHECK_CUDA(PARROT_CUDA_FREE(d_cross_rwr_dist));
         d_cross_rwr_dist = d_cross_attr_dist;
         d_cross_attr_dist = nullptr;
     } else {
-        cublasHandle_t scale_handle = nullptr;
-        CHECK_CUBLAS(cublasCreate(&scale_handle));
+        cublasHandle_t tmp_handle = nullptr;
+        CHECK_CUBLAS(cublasCreate(&tmp_handle));
         const element_type scale = static_cast<element_type>(1.5);
-        CHECK_CUBLAS(parrot_cublas_scal(scale_handle, static_cast<int>(cross_size), &scale, d_cross_rwr_dist, 1));
-        CHECK_CUBLAS(cublasDestroy(scale_handle));
+        CHECK_CUBLAS(parrot_cublas_scal(tmp_handle, static_cast<int>(cross_size), &scale, d_cross_rwr_dist, 1));
+        CHECK_CUBLAS(cublasDestroy(tmp_handle));
     }
     //make the anchor links cross rwr dist zero
     anchor_cost_zero_device(d_cross_rwr_dist, g1_num_nodes, g2_num_nodes, anchor_pairs, static_cast<element_type>(0.0));

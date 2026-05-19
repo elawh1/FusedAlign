@@ -469,35 +469,17 @@ CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_p
         h_vals.swap(merged_vals);
     }
 
-    int* d_row_offsets = nullptr;
-    element_type* d_vals = nullptr;
-    element_type* d_row_sums = nullptr;
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_row_offsets, (rows + 1) * sizeof(int)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_vals, h_vals.size() * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_row_sums, rows * sizeof(element_type)));
-    CHECK_CUDA(cudaMemcpy(d_row_offsets, h_row_offsets.data(), (rows + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_vals, h_vals.data(), h_vals.size() * sizeof(element_type), cudaMemcpyHostToDevice));
-
-    const unsigned int blocks = static_cast<unsigned int>((rows + kBlockSize - 1) / kBlockSize);
-    csr_row_sum_kernel<<<blocks, kBlockSize>>>(d_row_offsets, d_vals, rows, d_row_sums);
-    CHECK_CUDA(cudaGetLastError());
-    csr_scale_rows_kernel<<<blocks, kBlockSize>>>(d_row_offsets, d_vals, d_row_sums, rows);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaMemcpy(h_vals.data(), d_vals, h_vals.size() * sizeof(element_type), cudaMemcpyDeviceToHost));
-
-    CHECK_CUDA(PARROT_CUDA_FREE(d_row_sums));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_vals));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_row_offsets));
-
     for (int row = 0; row < rows; ++row) {
         element_type sum = static_cast<element_type>(0.0);
         for (int idx = h_row_offsets[row]; idx < h_row_offsets[row + 1]; ++idx) {
             sum += h_vals[idx];
         }
-        graph_row_sum[row] = sum;
-    }
-    for (int i = 0; i < static_cast<int>(graph_row_sum.size()); ++i) {
-        if (graph_row_sum[i] < 1e-10) DEBUG_ONLY(printf("333 graph_row_sum[%d] is zero \n", i));
+        if (sum > static_cast<element_type>(1e-10)) {
+            for (int idx = h_row_offsets[row]; idx < h_row_offsets[row + 1]; ++idx) {
+                h_vals[idx] /= sum;
+            }
+        }
+        DEBUG_ONLY(if (sum < 1e-10) printf("333 graph_row_sum[%d] is zero \n", row));
     }
 
     return make_cuda_csr_from_host_impl(rows, cols, h_row_offsets, h_col_ind, h_vals);

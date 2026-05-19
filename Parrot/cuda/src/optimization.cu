@@ -30,23 +30,18 @@ struct CusparseHandle {
 
 }  // namespace
 
-std::vector<element_type> init_Hlog_with_anchors(int nrows,
-                                           int ncols,
-                                           const std::pair<std::vector<int>, std::vector<int>>& anchors) {
+void validate_anchors(int nrows, int ncols,
+                      const std::pair<std::vector<int>, std::vector<int>>& anchors) {
     if (anchors.first.size() != anchors.second.size()) {
-        throw std::invalid_argument("anchor size mismatch inside init_Hlog_with_anchors");
+        throw std::invalid_argument("anchor size mismatch");
     }
-    std::vector<element_type> H_log(static_cast<size_t>(nrows) * static_cast<size_t>(ncols), static_cast<element_type>(0.0));
-    const element_type anchor_value = static_cast<element_type>(std::log(1e-6));
     for (size_t t = 0; t < anchors.first.size(); ++t) {
         const int row = anchors.first[t];
         const int col = anchors.second[t];
         if (row < 0 || row >= nrows || col < 0 || col >= ncols) {
-            throw std::out_of_range("anchor out of range inside init_Hlog_with_anchors");
+            throw std::out_of_range("anchor out of range");
         }
-        H_log[static_cast<size_t>(row) + static_cast<size_t>(col) * static_cast<size_t>(nrows)] = anchor_value;
     }
-    return H_log;
 }
 
 namespace {
@@ -353,6 +348,25 @@ __global__ void compute_cost_fixed_kernel(element_type* cross_dist,
     const int i = static_cast<int>(idx % static_cast<size_t>(n1));
     const int j = static_cast<int>(idx / static_cast<size_t>(n1));
     cross_dist[idx] += lambda_e * (row_avg_square_dist2[j] + row_avg_square_dist1[i]) - lambda_a * h_log[idx];
+}
+
+__global__ void fill_value_kernel(element_type* out, size_t total, element_type value) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < total) {
+        out[idx] = value;
+    }
+}
+
+__global__ void scatter_anchor_values_kernel(element_type* out,
+                                             const int* anchor_rows,
+                                             const int* anchor_cols,
+                                             int num_anchors,
+                                             int n_rows,
+                                             element_type value) {
+    const int t = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (t < num_anchors) {
+        out[static_cast<size_t>(anchor_rows[t]) + static_cast<size_t>(anchor_cols[t]) * static_cast<size_t>(n_rows)] = value;
+    }
 }
 
 __global__ void apply_log_penalty_kernel(element_type* s, element_type* cost, size_t total, element_type lambda_p) {
@@ -873,8 +887,7 @@ std::vector<element_type> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_a
     const element_type lambda_total = lambda_n + lambda_a + lambda_p;
     const size_t matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
     const element_type lambda_e = lambda_e_in * static_cast<element_type>(matrix_size);
-    std::vector<element_type> S(matrix_size, static_cast<element_type>(1.0) / static_cast<element_type>(matrix_size));
-    std::vector<element_type> H_log = init_Hlog_with_anchors(n1, n2, anchor_pairs);
+    validate_anchors(n1, n2, anchor_pairs);
 #ifdef DEBUG
     const auto debug_time_1 = synced_now();
 #endif
@@ -887,51 +900,65 @@ std::vector<element_type> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_a
     DEBUG_ONLY(std::cout << "optimization toggles: dual_dot=" << (use_dual_dot ? "on" : "off")
                          << ", minaa_tuned=" << (use_tuned_minaa ? "on" : "off") << std::endl);
 
-    element_type* d_s = nullptr;
-    element_type* d_cost = nullptr;
-    element_type* d_cost_buff = nullptr;
-    element_type* d_c_fixed = nullptr;
-    element_type* d_a_row = nullptr;
-    element_type* d_b_col = nullptr;
-    element_type* d_buffer = nullptr;
-    element_type* d_buffer2 = nullptr;
-    element_type* d_h_log = nullptr;
     element_type* d_row_avg_square_dist1 = nullptr;
     element_type* d_row_avg_square_dist2 = nullptr;
-    element_type* d_update_block_sums = nullptr;
-    element_type* d_dot_partial_old = nullptr;
-    element_type* d_dot_partial_new = nullptr;
-    element_type* d_dot_pair_out = nullptr;
-
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_s, matrix_size * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_cost, matrix_size * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_cost_buff, matrix_size * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_c_fixed, matrix_size * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_a_row, static_cast<size_t>(n2) * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_b_col, static_cast<size_t>(n1) * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_buffer, matrix_size * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_buffer2, matrix_size * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_h_log, matrix_size * sizeof(element_type)));
     CHECK_CUDA(PARROT_CUDA_MALLOC(&d_row_avg_square_dist1, static_cast<size_t>(n1) * sizeof(element_type)));
     CHECK_CUDA(PARROT_CUDA_MALLOC(&d_row_avg_square_dist2, static_cast<size_t>(n2) * sizeof(element_type)));
-    const unsigned int update_blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
-    if (update_blocks > 0) {
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_update_block_sums, static_cast<size_t>(update_blocks) * sizeof(element_type)));
-        if (use_dual_dot) {
-            CHECK_CUDA(PARROT_CUDA_MALLOC(&d_dot_partial_old, static_cast<size_t>(update_blocks) * sizeof(element_type)));
-            CHECK_CUDA(PARROT_CUDA_MALLOC(&d_dot_partial_new, static_cast<size_t>(update_blocks) * sizeof(element_type)));
-            CHECK_CUDA(PARROT_CUDA_MALLOC(&d_dot_pair_out, 2 * sizeof(element_type)));
-        }
-    }
 
-    CHECK_CUDA(cudaMemcpy(d_s, S.data(), matrix_size * sizeof(element_type), cudaMemcpyHostToDevice));
+    const unsigned int update_blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+    const size_t pool_elems = 6 * matrix_size
+        + static_cast<size_t>(n2)             // d_a_row
+        + static_cast<size_t>(n1)             // d_b_col
+        + static_cast<size_t>(update_blocks)  // d_update_block_sums
+        + static_cast<size_t>(update_blocks)  // d_dot_partial_old
+        + static_cast<size_t>(update_blocks)  // d_dot_partial_new
+        + 2;                                  // d_dot_pair_out
+    element_type* d_pool = nullptr;
+    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_pool, pool_elems * sizeof(element_type)));
+
+    element_type* d_s               = d_pool;
+    element_type* d_cost            = d_s             + matrix_size;
+    element_type* d_cost_buff       = d_cost          + matrix_size;
+    element_type* d_c_fixed         = d_cost_buff     + matrix_size;
+    element_type* d_buffer          = d_c_fixed       + matrix_size;
+    element_type* d_buffer2         = d_buffer        + matrix_size;
+    element_type* d_a_row           = d_buffer2       + matrix_size;
+    element_type* d_b_col           = d_a_row         + n2;
+    element_type* d_update_block_sums = d_b_col       + n1;
+    element_type* d_dot_partial_old = d_update_block_sums + update_blocks;
+    element_type* d_dot_partial_new = d_dot_partial_old   + update_blocks;
+    element_type* d_dot_pair_out    = d_dot_partial_new   + update_blocks;
+
+    element_type* d_h_log = nullptr;
+    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_h_log, matrix_size * sizeof(element_type)));
+
+    std::vector<element_type> S(matrix_size);  // pre-fault pages now so D2H copy at the end is fast
+    {
+        const unsigned int fill_blocks = static_cast<unsigned int>((matrix_size + kBlockSize - 1) / kBlockSize);
+        fill_value_kernel<<<fill_blocks, kBlockSize>>>(d_s, matrix_size,
+            static_cast<element_type>(1.0) / static_cast<element_type>(matrix_size));
+        CHECK_CUDA(cudaGetLastError());
+    }
     CHECK_CUDA(cudaMemcpy(d_c_fixed, d_cross_dist, matrix_size * sizeof(element_type), cudaMemcpyDeviceToDevice));
-    CHECK_CUDA(cudaMemcpy(d_h_log, H_log.data(), matrix_size * sizeof(element_type), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemset(d_h_log, 0, matrix_size * sizeof(element_type)));
+    if (!anchor_pairs.first.empty()) {
+        const size_t num_anchors = anchor_pairs.first.size();
+        int* d_anchor_rows = nullptr;
+        int* d_anchor_cols = nullptr;
+        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_anchor_rows, num_anchors * sizeof(int)));
+        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_anchor_cols, num_anchors * sizeof(int)));
+        CHECK_CUDA(cudaMemcpy(d_anchor_rows, anchor_pairs.first.data(), num_anchors * sizeof(int), cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaMemcpy(d_anchor_cols, anchor_pairs.second.data(), num_anchors * sizeof(int), cudaMemcpyHostToDevice));
+        const unsigned int anchor_blocks = static_cast<unsigned int>((num_anchors + kBlockSize - 1) / kBlockSize);
+        scatter_anchor_values_kernel<<<anchor_blocks, kBlockSize>>>(d_h_log, d_anchor_rows, d_anchor_cols,
+            static_cast<int>(num_anchors), n1, static_cast<element_type>(std::log(1e-6)));
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUDA(PARROT_CUDA_FREE(d_anchor_rows));
+        CHECK_CUDA(PARROT_CUDA_FREE(d_anchor_cols));
+    }
     CHECK_CUDA(cudaMemset(d_a_row, 0, static_cast<size_t>(n2) * sizeof(element_type)));
     std::vector<element_type> b_col(static_cast<size_t>(n1), static_cast<element_type>(1.0) / static_cast<element_type>(n2));
     CHECK_CUDA(cudaMemcpy(d_b_col, b_col.data(), static_cast<size_t>(n1) * sizeof(element_type), cudaMemcpyHostToDevice));
-    H_log.clear();
-    H_log.shrink_to_fit();
 
     const unsigned int blocks_row_1 = static_cast<unsigned int>((n1 + kBlockSize - 1) / kBlockSize);
     const unsigned int blocks_row_2 = static_cast<unsigned int>((n2 + kBlockSize - 1) / kBlockSize);
@@ -1062,18 +1089,7 @@ std::vector<element_type> con_prox_pt_opt_device(const CudaCsrMatrix& row_norm_a
     const double graph1_spmm4_ms_total = compute_cost_context.graph1_spmm4_ms_total;
 
     destroy_compute_cost_context(compute_cost_context);
-    if (d_dot_pair_out != nullptr) CHECK_CUDA(PARROT_CUDA_FREE(d_dot_pair_out));
-    if (d_dot_partial_new != nullptr) CHECK_CUDA(PARROT_CUDA_FREE(d_dot_partial_new));
-    if (d_dot_partial_old != nullptr) CHECK_CUDA(PARROT_CUDA_FREE(d_dot_partial_old));
-    if (d_update_block_sums != nullptr) CHECK_CUDA(PARROT_CUDA_FREE(d_update_block_sums));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_buffer2));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_buffer));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_b_col));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_a_row));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_c_fixed));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_cost_buff));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_cost));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_s));
+    CHECK_CUDA(PARROT_CUDA_FREE(d_pool));
     destroy_cuda_csr(d_row_norm_adj1_tr);
 
 #ifdef DEBUG
