@@ -1,9 +1,7 @@
 NVCC ?= nvcc
-CUSPARSELT_DIR = $(HOME)/opt/cusparselt
 ELEMENT_TYPE ?= double
 NVCCFLAGS = -O3 -std=c++17 -rdc=true -Iinclude \
-    -I/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/include \
-    -I$(CUSPARSELT_DIR)/include
+    -I/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/include
 
 ifeq ($(ELEMENT_TYPE),float)
 NVCCFLAGS += -DPARROT_ELEMENT_FLOAT
@@ -24,13 +22,8 @@ CUDA_SRC = src/parrot_cuda.cu src/randomwalk.cu src/sddmm.cu \
 CUDA_OBJS = $(CUDA_SRC:.cu=.o)
 CUDA_HDR = include/cuda_helper.cuh
 
-
-CUSPARSELT_LIBDIR = $(CUSPARSELT_DIR)/lib
-
 NVLIBS = -L/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/math_libs/12.9/targets/x86_64-linux/lib \
-         -L$(CUSPARSELT_LIBDIR) \
-         -Xlinker -rpath -Xlinker $(CUSPARSELT_LIBDIR) \
-         -lcusparseLt -lcusparse -lcublas
+         -lcusparse -lcublas
 
 all: $(CUDA_TARGET)
 

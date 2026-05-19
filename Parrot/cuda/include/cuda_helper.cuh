@@ -21,7 +21,6 @@
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cublas_v2.h>
-#include <cusparseLt.h>
 
 #ifdef DEBUG
 #define DEBUG_ONLY(stmt) \
@@ -63,15 +62,6 @@ do {                                                                            
         std::exit(EXIT_FAILURE);                                                 \
     }                                                                            \
 } while (0)
-
-#define CHECK_CUSPARSELT(func) {                                                 \
-    cusparseStatus_t status = (func);                                            \
-    if (status != CUSPARSE_STATUS_SUCCESS) {                                     \
-        std::cerr << "cuSPARSELt Error: " << status << " at line " << __LINE__  \
-                  << std::endl;                                                  \
-        exit(EXIT_FAILURE);                                                      \
-    }                                                                            \
-}
 
 #if defined(PARROT_ELEMENT_FLOAT) && defined(PARROT_ELEMENT_DOUBLE)
 #error "Define only one of PARROT_ELEMENT_FLOAT or PARROT_ELEMENT_DOUBLE"

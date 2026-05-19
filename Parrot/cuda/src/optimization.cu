@@ -51,19 +51,39 @@ std::vector<element_type> init_Hlog_with_anchors(int nrows,
 
 namespace {
 
-__global__ void col_major_to_row_major_kernel(const element_type* in,
+constexpr int kTransposeTileDim = 32;
+constexpr int kTransposeBlockRows = 8;
+
+// Tiled shared-memory transpose: coalesced reads and coalesced writes.
+// Converts col-major (rows x cols) → row-major (rows x cols).
+// smem padding (+1) eliminates shared memory bank conflicts.
+__global__ void col_major_to_row_major_kernel(const element_type* __restrict__ in,
                                               int rows,
                                               int cols,
-                                              element_type* out) {
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
-    if (idx >= total) {
-        return;
-    }
+                                              element_type* __restrict__ out) {
+    __shared__ element_type smem[kTransposeTileDim][kTransposeTileDim + 1];
 
-    const int row = static_cast<int>(idx % static_cast<size_t>(rows));
-    const int col = static_cast<int>(idx / static_cast<size_t>(rows));
-    out[static_cast<size_t>(row) * static_cast<size_t>(cols) + static_cast<size_t>(col)] = in[idx];
+    const int i_base = static_cast<int>(blockIdx.y) * kTransposeTileDim;
+    const int j_base = static_cast<int>(blockIdx.x) * kTransposeTileDim;
+
+    // Read phase: threadIdx.x strides over rows (i), coalesced reads from col-major.
+    for (int dy = 0; dy < kTransposeTileDim; dy += kTransposeBlockRows) {
+        const int gi = i_base + static_cast<int>(threadIdx.x);
+        const int gj = j_base + static_cast<int>(threadIdx.y) + dy;
+        if (gi < rows && gj < cols) {
+            smem[threadIdx.x][threadIdx.y + dy] = in[static_cast<size_t>(gj) * rows + gi];
+        }
+    }
+    __syncthreads();
+
+    // Write phase: threadIdx.x strides over cols (j), coalesced writes to row-major.
+    for (int dy = 0; dy < kTransposeTileDim; dy += kTransposeBlockRows) {
+        const int gi = i_base + static_cast<int>(threadIdx.y) + dy;
+        const int gj = j_base + static_cast<int>(threadIdx.x);
+        if (gi < rows && gj < cols) {
+            out[static_cast<size_t>(gi) * cols + gj] = smem[threadIdx.y + dy][threadIdx.x];
+        }
+    }
 }
 
 __global__ void accumulate_cost_from_buffer2_kernel(const element_type* buffer2_row_major,
@@ -335,34 +355,6 @@ __global__ void compute_cost_fixed_kernel(element_type* cross_dist,
     cross_dist[idx] += lambda_e * (row_avg_square_dist2[j] + row_avg_square_dist1[i]) - lambda_a * h_log[idx];
 }
 
-__global__ void copy_row_major_to_padded_row_major_kernel(const element_type* in,
-                                                          int rows,
-                                                          int cols,
-                                                          int padded_cols,
-                                                          element_type* out) {
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
-    if (idx >= total) return;
-
-    const int row = static_cast<int>(idx / static_cast<size_t>(cols));
-    const int col = static_cast<int>(idx % static_cast<size_t>(cols));
-    out[static_cast<size_t>(row) * static_cast<size_t>(padded_cols) + static_cast<size_t>(col)] = in[idx];
-}
-
-__global__ void copy_padded_row_major_to_row_major_kernel(const element_type* in,
-                                                          int rows,
-                                                          int cols,
-                                                          int padded_cols,
-                                                          element_type* out) {
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
-    if (idx >= total) return;
-
-    const int row = static_cast<int>(idx / static_cast<size_t>(cols));
-    const int col = static_cast<int>(idx % static_cast<size_t>(cols));
-    out[idx] = in[static_cast<size_t>(row) * static_cast<size_t>(padded_cols) + static_cast<size_t>(col)];
-}
-
 __global__ void apply_log_penalty_kernel(element_type* s, element_type* cost, size_t total, element_type lambda_p) {
     const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx >= total) return;
@@ -553,35 +545,6 @@ struct ComputeCostContext {
     element_type* d_cost_graph1_row_major = nullptr;
     void* d_workspace_shared = nullptr;
     size_t workspace_shared_size = 0;
-    bool use_cusparselt_spmm3 = false;
-    cusparseLtHandle_t lt_handle{};
-    bool lt_handle_initialized = false;
-    cusparseLtMatDescriptor_t lt_mat_a{};
-    cusparseLtMatDescriptor_t lt_mat_b{};
-    cusparseLtMatDescriptor_t lt_mat_c{};
-    cusparseLtMatDescriptor_t lt_mat_d{};
-    bool lt_mat_a_initialized = false;
-    bool lt_mat_b_initialized = false;
-    bool lt_mat_c_initialized = false;
-    bool lt_mat_d_initialized = false;
-    cusparseLtMatmulDescriptor_t lt_matmul_desc{};
-    bool lt_matmul_desc_initialized = false;
-    cusparseLtMatmulAlgSelection_t lt_alg_sel{};
-    bool lt_alg_sel_initialized = false;
-    cusparseLtMatmulPlan_t lt_plan{};
-    bool lt_plan_initialized = false;
-    element_type* d_lt_a_dense = nullptr;
-    element_type* d_lt_a_pruned = nullptr;
-    void* d_lt_a_compressed = nullptr;
-    void* d_lt_compress_buffer = nullptr;
-    void* d_lt_workspace = nullptr;
-    element_type* d_lt_b_padded = nullptr;
-    element_type* d_lt_d_padded = nullptr;
-    size_t lt_workspace_size = 0;
-    size_t lt_compressed_size = 0;
-    int lt_m = 0;
-    int lt_k = 0;
-    int lt_n = 0;
     element_type* d_s_row_major_ptr = nullptr;
     element_type* d_cost_row_major_ptr = nullptr;
     bool use_graph1_transpose_view = false;
@@ -598,62 +561,6 @@ struct ComputeCostContext {
 };
 
 void destroy_compute_cost_context(ComputeCostContext& context) {
-    if (context.d_lt_workspace != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(context.d_lt_workspace));
-        context.d_lt_workspace = nullptr;
-    }
-    if (context.d_lt_d_padded != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(context.d_lt_d_padded));
-        context.d_lt_d_padded = nullptr;
-    }
-    if (context.d_lt_b_padded != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(context.d_lt_b_padded));
-        context.d_lt_b_padded = nullptr;
-    }
-    if (context.d_lt_compress_buffer != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(context.d_lt_compress_buffer));
-        context.d_lt_compress_buffer = nullptr;
-    }
-    if (context.d_lt_a_compressed != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(context.d_lt_a_compressed));
-        context.d_lt_a_compressed = nullptr;
-    }
-    if (context.d_lt_a_pruned != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(context.d_lt_a_pruned));
-        context.d_lt_a_pruned = nullptr;
-    }
-    if (context.d_lt_a_dense != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(context.d_lt_a_dense));
-        context.d_lt_a_dense = nullptr;
-    }
-    if (context.lt_plan_initialized) {
-        CHECK_CUSPARSELT(cusparseLtMatmulPlanDestroy(&context.lt_plan));
-        context.lt_plan_initialized = false;
-    }
-    if (context.lt_alg_sel_initialized) {
-        CHECK_CUSPARSELT(cusparseLtMatmulAlgSelectionDestroy(&context.lt_alg_sel));
-        context.lt_alg_sel_initialized = false;
-    }
-    if (context.lt_mat_d_initialized) {
-        CHECK_CUSPARSELT(cusparseLtMatDescriptorDestroy(&context.lt_mat_d));
-        context.lt_mat_d_initialized = false;
-    }
-    if (context.lt_mat_c_initialized) {
-        CHECK_CUSPARSELT(cusparseLtMatDescriptorDestroy(&context.lt_mat_c));
-        context.lt_mat_c_initialized = false;
-    }
-    if (context.lt_mat_b_initialized) {
-        CHECK_CUSPARSELT(cusparseLtMatDescriptorDestroy(&context.lt_mat_b));
-        context.lt_mat_b_initialized = false;
-    }
-    if (context.lt_mat_a_initialized) {
-        CHECK_CUSPARSELT(cusparseLtMatDescriptorDestroy(&context.lt_mat_a));
-        context.lt_mat_a_initialized = false;
-    }
-    if (context.lt_handle_initialized) {
-        CHECK_CUSPARSELT(cusparseLtDestroy(&context.lt_handle));
-        context.lt_handle_initialized = false;
-    }
     if (context.d_workspace_shared != nullptr) {
         CHECK_CUDA(PARROT_CUDA_FREE(context.d_workspace_shared));
         context.d_workspace_shared = nullptr;
@@ -686,13 +593,6 @@ void destroy_compute_cost_context(ComputeCostContext& context) {
     destroy_spmm_matrix_view(context.row_norm_adj2_view);
     destroy_spmm_matrix_view(context.intra_dist1_view);
     destroy_spmm_matrix_view(context.intra_dist2_view);
-    context.use_cusparselt_spmm3 = false;
-    context.lt_matmul_desc_initialized = false;
-    context.lt_workspace_size = 0;
-    context.lt_compressed_size = 0;
-    context.lt_m = 0;
-    context.lt_k = 0;
-    context.lt_n = 0;
     context.d_s_row_major_ptr = nullptr;
     context.d_cost_row_major_ptr = nullptr;
     context.use_graph1_transpose_view = false;
@@ -728,212 +628,6 @@ bool env_flag_enabled_default_true(const char* name) {
         return false;
     }
     return true;
-}
-
-int round_up_to_multiple(int value, int multiple) {
-    return ((value + multiple - 1) / multiple) * multiple;
-}
-
-bool try_setup_cusparselt_for_spmm3(ComputeCostContext& context, cusparseHandle_t sp_handle) {
-#if !PARROT_USE_FLOAT
-    (void)context;
-    (void)sp_handle;
-    return false;
-#else
-    if (!env_flag_enabled("PARROT_OPT_SPMM3_CUSPARSELT")) {
-        return false;
-    }
-    int device = 0;
-    CHECK_CUDA(cudaGetDevice(&device));
-    cudaDeviceProp prop{};
-    CHECK_CUDA(cudaGetDeviceProperties(&prop, device));
-    if (prop.major < 8) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: requires compute capability >= 8.0" << std::endl);
-        return false;
-    }
-
-    constexpr int kLtFp32DenseDimMultiple = 4;
-    constexpr int kLtFp32StructuredDimMultiple = 8;
-    context.lt_m = round_up_to_multiple(context.n2, kLtFp32StructuredDimMultiple);
-    context.lt_k = round_up_to_multiple(context.n2, kLtFp32StructuredDimMultiple);
-    context.lt_n = round_up_to_multiple(context.n1, kLtFp32DenseDimMultiple);
-    DEBUG_ONLY(if (context.lt_m != context.n2 || context.lt_k != context.n2 || context.lt_n != context.n1) {
-        std::cout << "cusparselt spmm3 padding: structured A rows/cols/ld " << context.n2 << " -> " << context.lt_m
-                  << ", dense B/C/D cols " << context.n1 << " -> " << context.lt_n << std::endl;
-    });
-
-    if (cusparseLtInit(&context.lt_handle) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: cusparseLtInit failed" << std::endl);
-        return false;
-    }
-    context.lt_handle_initialized = true;
-
-    const int64_t m = static_cast<int64_t>(context.lt_m);
-    const int64_t k = static_cast<int64_t>(context.lt_k);
-    const int64_t n = static_cast<int64_t>(context.lt_n);
-    const uint32_t alignment = 16U;
-
-    const cusparseStatus_t structured_status =
-        cusparseLtStructuredDescriptorInit(&context.lt_handle, &context.lt_mat_a, m, k, k,
-                                           alignment, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_ROW,
-                                           CUSPARSELT_SPARSITY_50_PERCENT);
-    if (structured_status != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: structured descriptor init failed: "
-                             << cusparseLtGetErrorString(structured_status)
-                             << " (m=" << m << ", k=" << k << ", ld=" << k
-                             << ", alignment=" << alignment << ")" << std::endl);
-        return false;
-    }
-    context.lt_mat_a_initialized = true;
-
-    if (cusparseLtDenseDescriptorInit(&context.lt_handle, &context.lt_mat_b, k, n, n,
-                                      alignment, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_ROW) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: B descriptor init failed" << std::endl);
-        return false;
-    }
-    context.lt_mat_b_initialized = true;
-
-    if (cusparseLtDenseDescriptorInit(&context.lt_handle, &context.lt_mat_c, m, n, n,
-                                      alignment, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_ROW) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: C descriptor init failed" << std::endl);
-        return false;
-    }
-    context.lt_mat_c_initialized = true;
-
-    if (cusparseLtDenseDescriptorInit(&context.lt_handle, &context.lt_mat_d, m, n, n,
-                                      alignment, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_ROW) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: D descriptor init failed" << std::endl);
-        return false;
-    }
-    context.lt_mat_d_initialized = true;
-
-    if (cusparseLtMatmulDescriptorInit(&context.lt_handle, &context.lt_matmul_desc,
-                                       CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                       CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                       &context.lt_mat_a,
-                                       &context.lt_mat_b,
-                                       &context.lt_mat_c,
-                                       &context.lt_mat_d,
-                                       CUSPARSE_COMPUTE_32F) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: matmul descriptor init failed" << std::endl);
-        return false;
-    }
-    context.lt_matmul_desc_initialized = true;
-
-    if (cusparseLtMatmulAlgSelectionInit(&context.lt_handle, &context.lt_alg_sel,
-                                         &context.lt_matmul_desc,
-                                         CUSPARSELT_MATMUL_ALG_DEFAULT) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: alg selection init failed" << std::endl);
-        return false;
-    }
-    context.lt_alg_sel_initialized = true;
-
-    if (cusparseLtMatmulPlanInit(&context.lt_handle, &context.lt_plan,
-                                 &context.lt_matmul_desc, &context.lt_alg_sel) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: plan init failed" << std::endl);
-        return false;
-    }
-    context.lt_plan_initialized = true;
-
-    const size_t dense_a_elems = static_cast<size_t>(context.lt_m) * static_cast<size_t>(context.lt_k);
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_lt_a_dense, dense_a_elems * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_lt_a_pruned, dense_a_elems * sizeof(element_type)));
-    CHECK_CUDA(cudaMemset(context.d_lt_a_dense, 0, dense_a_elems * sizeof(element_type)));
-
-    cusparseDnMatDescr_t dense_a = nullptr;
-    CHECK_CUSPARSE(cusparseCreateDnMat(&dense_a,
-                                       context.n2,
-                                       context.n2,
-                                       context.lt_k,
-                                       context.d_lt_a_dense,
-                                       PARROT_CUDA_R_TYPE,
-                                       CUSPARSE_ORDER_ROW));
-    size_t s2d_workspace_size = 0;
-    void* d_s2d_workspace = nullptr;
-    CHECK_CUSPARSE(cusparseSparseToDense_bufferSize(
-        sp_handle,
-        context.row_norm_adj2_view.descr,
-        dense_a,
-        CUSPARSE_SPARSETODENSE_ALG_DEFAULT,
-        &s2d_workspace_size));
-    if (s2d_workspace_size > 0) {
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_s2d_workspace, s2d_workspace_size));
-    }
-    CHECK_CUSPARSE(cusparseSparseToDense(
-        sp_handle,
-        context.row_norm_adj2_view.descr,
-        dense_a,
-        CUSPARSE_SPARSETODENSE_ALG_DEFAULT,
-        d_s2d_workspace));
-    if (d_s2d_workspace != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(d_s2d_workspace));
-    }
-    CHECK_CUSPARSE(cusparseDestroyDnMat(dense_a));
-
-    const size_t padded_dense_elems = static_cast<size_t>(context.lt_m) * static_cast<size_t>(context.lt_n);
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_lt_b_padded, padded_dense_elems * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_lt_d_padded, padded_dense_elems * sizeof(element_type)));
-
-    cudaStream_t stream = nullptr;
-    CHECK_CUSPARSE(cusparseGetStream(sp_handle, &stream));
-    if (cusparseLtSpMMAPrune(&context.lt_handle,
-                             &context.lt_matmul_desc,
-                             context.d_lt_a_dense,
-                             context.d_lt_a_pruned,
-                             CUSPARSELT_PRUNE_SPMMA_TILE,
-                             stream) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: prune failed" << std::endl);
-        return false;
-    }
-
-    int valid = 0;
-    if (cusparseLtSpMMAPruneCheck(&context.lt_handle,
-                                  &context.lt_matmul_desc,
-                                  context.d_lt_a_pruned,
-                                  &valid,
-                                  stream) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: prune check failed" << std::endl);
-        return false;
-    }
-    if (valid != 0) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: prune check reported invalid pattern" << std::endl);
-        return false;
-    }
-
-    size_t compressed_buffer_size = 0;
-    if (cusparseLtSpMMACompressedSize(&context.lt_handle, &context.lt_plan,
-                                      &context.lt_compressed_size,
-                                      &compressed_buffer_size) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: compressed size query failed" << std::endl);
-        return false;
-    }
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_lt_a_compressed, context.lt_compressed_size));
-    if (compressed_buffer_size > 0) {
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_lt_compress_buffer, compressed_buffer_size));
-    }
-    if (cusparseLtSpMMACompress(&context.lt_handle,
-                                &context.lt_plan,
-                                context.d_lt_a_pruned,
-                                context.d_lt_a_compressed,
-                                context.d_lt_compress_buffer,
-                                stream) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: compression failed" << std::endl);
-        return false;
-    }
-
-    if (cusparseLtMatmulGetWorkspace(&context.lt_handle, &context.lt_plan,
-                                     &context.lt_workspace_size) != CUSPARSE_STATUS_SUCCESS) {
-        DEBUG_ONLY(std::cout << "cusparselt spmm3 disabled: workspace query failed" << std::endl);
-        return false;
-    }
-    if (context.lt_workspace_size > 0) {
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_lt_workspace, context.lt_workspace_size));
-    }
-
-    context.use_cusparselt_spmm3 = true;
-    DEBUG_ONLY(std::cout << "cusparselt spmm3 enabled for optimization step" << std::endl);
-    return true;
-#endif
 }
 
 void initialize_compute_cost_context(ComputeCostContext& context,
@@ -1023,7 +717,6 @@ void initialize_compute_cost_context(ComputeCostContext& context,
         CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_workspace_shared, context.workspace_shared_size));
     }
 
-    (void)try_setup_cusparselt_for_spmm3(context, sp_handle);
 }
 
 void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
@@ -1065,7 +758,13 @@ void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
 
     if (!context.use_graph1_transpose_view) {
         if (benchmark) CHECK_CUDA(cudaEventRecord(evt_start));
-        col_major_to_row_major_kernel<<<blocks, kBlockSize>>>(d_cost, context.n1, context.n2, context.d_cost_graph1_row_major);
+        {
+            const dim3 transpose_block(kTransposeTileDim, kTransposeBlockRows);
+            const dim3 transpose_grid(
+                static_cast<unsigned int>((context.n2 + kTransposeTileDim - 1) / kTransposeTileDim),
+                static_cast<unsigned int>((context.n1 + kTransposeTileDim - 1) / kTransposeTileDim));
+            col_major_to_row_major_kernel<<<transpose_grid, transpose_block>>>(d_cost, context.n1, context.n2, context.d_cost_graph1_row_major);
+        }
         CHECK_CUDA(cudaGetLastError());
         if (benchmark) {
             CHECK_CUDA(cudaEventRecord(evt_stop));
@@ -1085,55 +784,19 @@ void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
         CHECK_CUDA(cudaEventElapsedTime(&spmm2_ms_local, evt_start, evt_stop));
     }
 
-    if (context.use_cusparselt_spmm3) {
-        const element_type lt_alpha = static_cast<element_type>(1.0);
-        const element_type lt_beta = static_cast<element_type>(0.0);
-        CHECK_CUDA(cudaMemset(context.d_lt_b_padded, 0,
-                              static_cast<size_t>(context.lt_k) * static_cast<size_t>(context.lt_n) * sizeof(element_type)));
-        CHECK_CUDA(cudaMemset(context.d_lt_d_padded, 0,
-                              static_cast<size_t>(context.lt_m) * static_cast<size_t>(context.lt_n) * sizeof(element_type)));
-        copy_row_major_to_padded_row_major_kernel<<<blocks, kBlockSize>>>(
-            context.d_s_row_major_ptr,
-            context.n2,
-            context.n1,
-            context.lt_n,
-            context.d_lt_b_padded);
-        CHECK_CUDA(cudaGetLastError());
-        const cusparseStatus_t lt_status = cusparseLtMatmul(
-            &context.lt_handle,
-            &context.lt_plan,
-            &lt_alpha,
-            context.d_lt_a_compressed,
-            context.d_lt_b_padded,
-            &lt_beta,
-            context.d_lt_d_padded,
-            context.d_lt_d_padded,
-            context.d_lt_workspace,
-            nullptr,
-            0);
-        if (lt_status != CUSPARSE_STATUS_SUCCESS) {
-            DEBUG_ONLY(std::cout << "cusparselt spmm3 execution failed, falling back to cusparseSpMM" << std::endl);
-            CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                        &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                        PARROT_CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
-        } else {
-            copy_padded_row_major_to_row_major_kernel<<<blocks, kBlockSize>>>(
-                context.d_lt_d_padded,
-                context.n2,
-                context.n1,
-                context.lt_n,
-                context.d_cost_row_major_ptr);
-            CHECK_CUDA(cudaGetLastError());
-        }
-    } else {
-        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                    &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                    PARROT_CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
-    }
+    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                PARROT_CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
 
     if (!context.use_graph1_transpose_view) {
         if (benchmark) CHECK_CUDA(cudaEventRecord(evt_start));
-        col_major_to_row_major_kernel<<<blocks, kBlockSize>>>(d_cost, context.n1, context.n2, context.d_cost_graph1_row_major);
+        {
+            const dim3 transpose_block(kTransposeTileDim, kTransposeBlockRows);
+            const dim3 transpose_grid(
+                static_cast<unsigned int>((context.n2 + kTransposeTileDim - 1) / kTransposeTileDim),
+                static_cast<unsigned int>((context.n1 + kTransposeTileDim - 1) / kTransposeTileDim));
+            col_major_to_row_major_kernel<<<transpose_grid, transpose_block>>>(d_cost, context.n1, context.n2, context.d_cost_graph1_row_major);
+        }
         CHECK_CUDA(cudaGetLastError());
         if (benchmark) {
             CHECK_CUDA(cudaEventRecord(evt_stop));
