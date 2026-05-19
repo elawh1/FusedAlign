@@ -73,7 +73,7 @@ int main(int argc, char* argv[]){
         DEBUG_ONLY(printf("g1_feat size %ld  g2_feat size %ld\n", g1_feat.size(), g2_feat.size()));
     }
     auto setup_end = std::chrono::high_resolution_clock::now();
-    phase_timings.push_back({"input loading", std::chrono::duration_cast<milliseconds>(setup_end - setup_start).count()});
+    // phase_timings.push_back({"input loading", std::chrono::duration_cast<milliseconds>(setup_end - setup_start).count()});
     int l = anchor_pairs.first.size();
     DEBUG_ONLY(printf("graph1 #nodes %d -- graph2 #nodes %d -- avg nnz1/n1 %d -- avg nnz2/n2  %d -- use node attributes %d --- # of anchor links(l) %ld\n\n",
         g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, use_attr, anchor_pairs.first.size()));

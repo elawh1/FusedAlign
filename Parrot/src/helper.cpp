@@ -513,7 +513,8 @@ void get_batch_rwr_scores_rowmjr(sparse_matrix_t graph_norm_csr, std::vector<MKL
     // mkl_set_num_threads(numThreads);
     // omp_set_num_threads(1);
 
-    mkl_dimatcopy('R', 'T', n, l, 1.0, Xnext_vals.data(), n, l);
+    mkl_dimatcopy('R', 'T', n, l, 1.0, Xnext_vals.data(), l, n);
+
 
     auto time_2 = std::chrono::high_resolution_clock::now();
     DEBUG_ONLY(std::cout << "in get_batch_rwr_scores_rowmjr generate E " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
