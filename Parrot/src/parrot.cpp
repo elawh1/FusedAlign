@@ -73,7 +73,7 @@ int main(int argc, char* argv[]){
         DEBUG_ONLY(printf("g1_feat size %ld  g2_feat size %ld\n", g1_feat.size(), g2_feat.size()));
     }
     auto setup_end = std::chrono::high_resolution_clock::now();
-    phase_timings.push_back({"input loading", std::chrono::duration_cast<milliseconds>(setup_end - setup_start).count()});
+    // phase_timings.push_back({"input loading", std::chrono::duration_cast<milliseconds>(setup_end - setup_start).count()});
     int l = anchor_pairs.first.size();
     DEBUG_ONLY(printf("graph1 #nodes %d -- graph2 #nodes %d -- avg nnz1/n1 %d -- avg nnz2/n2  %d -- use node attributes %d --- # of anchor links(l) %ld\n\n",
         g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, use_attr, anchor_pairs.first.size()));
@@ -92,31 +92,16 @@ int main(int argc, char* argv[]){
 
     std::vector<double>  g1_rwr ((size_t) g1_num_nodes * (size_t) l);
     auto g1_rwr_start = std::chrono::high_resolution_clock::now();
-    get_batch_rwr_scores(graph1_row_normalized, anchor_pairs.first, g1_num_nodes, avg_nnz1_per_n1, directed, 0.15, 100, true, g1_rwr);
+    get_batch_rwr_scores_rowmjr(graph1_row_normalized, anchor_pairs.first, g1_num_nodes, avg_nnz1_per_n1, directed, 0.15, 100, true, g1_rwr);
     auto time_2 = std::chrono::high_resolution_clock::now();
     phase_timings.push_back({"graph1 RWR", std::chrono::duration_cast<milliseconds>(time_2 - g1_rwr_start).count()});
     DEBUG_ONLY(std::cout << "graph1 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-g1_rwr_start).count() << " ms" << std::endl);
     std::vector<double>  g2_rwr ((size_t) g2_num_nodes * (size_t) l);
     auto g2_rwr_start = std::chrono::high_resolution_clock::now();
-    get_batch_rwr_scores(graph2_row_normalized, anchor_pairs.second, g2_num_nodes, avg_nnz2_per_n2, directed, 0.15, 100, true, g2_rwr);
+    get_batch_rwr_scores_rowmjr(graph2_row_normalized, anchor_pairs.second, g2_num_nodes, avg_nnz2_per_n2, directed, 0.15, 100, true, g2_rwr);
     auto time_3 = std::chrono::high_resolution_clock::now();
     phase_timings.push_back({"graph2 RWR", std::chrono::duration_cast<milliseconds>(time_3 - g2_rwr_start).count()});
     DEBUG_ONLY(std::cout << "graph2 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_3-g2_rwr_start).count() << " ms" << std::endl);
-    
-    // std::vector<double> cross_rwr_dist (g1_num_nodes * g2_num_nodes);
-    // if (use_attr) {
-    //     get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l, cross_rwr_dist);
-    //     std::vector<double> cross_attr_dist (g1_num_nodes * g2_num_nodes);
-    //     get_normalized_neg_exp_dist (g1_feat, g2_feat, g1_num_nodes, g2_num_nodes, g1_feat.size() / g1_num_nodes, cross_attr_dist);
-    //     cblas_daxpy(cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_rwr_dist.data(), 1);
-    //     cross_attr_dist.clear(); cross_attr_dist.shrink_to_fit();
-    // }
-    // else {
-    //     get_normalized_neg_exp_dist (g1_rwr, g2_rwr, g1_num_nodes, g2_num_nodes, l, cross_rwr_dist);
-    //     cblas_dscal(g1_num_nodes * g2_num_nodes, (double) 1.5, cross_rwr_dist.data(), 1);
-    //     // cross_attr_dist = cross_rwr_dist;
-    //     // cblas_daxpy(cross_attr_dist.size(), 0.5, cross_rwr_dist.data(), 1, cross_attr_dist.data(), 1);
-    // }
 
     //row normalize rwr for both graphs
     l2_norm_inplace(g1_rwr, g1_num_nodes, l);
@@ -148,7 +133,6 @@ int main(int argc, char* argv[]){
     auto time_8 = std::chrono::high_resolution_clock::now();
     phase_timings.push_back({"graph1 intra distance", std::chrono::duration_cast<milliseconds>(time_8 - time_7).count()});
     DEBUG_ONLY(std::cout << "g1 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_8-time_7).count() << " ms" << std::endl);
-
     sparse_matrix_t intra_rwr2_masked_sddmm;
     auto g2_intra_start = std::chrono::high_resolution_clock::now();
     if (use_attr) masked_sddmm_intra_cost(g2_feat, graph2_row_normalized, g2_num_nodes, (g2_feat.size()) / g2_num_nodes, intra_rwr2_masked_sddmm);
@@ -156,13 +140,12 @@ int main(int argc, char* argv[]){
     auto time_9 = std::chrono::high_resolution_clock::now();
     phase_timings.push_back({"graph2 intra distance", std::chrono::duration_cast<milliseconds>(time_9 - g2_intra_start).count()});
     DEBUG_ONLY(std::cout << "g2 rwr dist " << std::chrono::duration_cast<std::chrono::milliseconds>(time_9-g2_intra_start).count() << " ms" << std::endl);
-
     //Free some memory 
     g1_feat.clear(); g1_feat.shrink_to_fit();
     g2_feat.clear(); g2_feat.shrink_to_fit();
     g1_rwr.clear(); g1_rwr.shrink_to_fit();
     g2_rwr.clear(); g2_rwr.shrink_to_fit();
-
+    
     //Compute cross_dist
     std::vector<double> cross_dist((size_t) g1_num_nodes * (size_t) g2_num_nodes);
     auto time_10 = std::chrono::high_resolution_clock::now();

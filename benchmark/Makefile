@@ -1,8 +1,8 @@
 CXX ?= g++
 CXXFLAGS = -O3 -std=c++17 -Wall
 
-TARGET = spmm_scratch
-SRC =  spmm_scratch.cpp
+TARGET = spmm_col
+SRC =  spmm_col.cpp
 HDR = helper2.h spmm.h mtx.h
 # ---- BLAS / MKL ----
 # Default: OpenBLAS

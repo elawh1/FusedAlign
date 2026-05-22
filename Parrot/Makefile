@@ -13,7 +13,8 @@ HDR = include/helper.h include/helper2.h include/fused_spmm.h include/accuracy.h
 LIBS = -lopenblas
 
 ifdef MKLROOT
-CXXFLAGS += -march=native -fopenmp -DMKL_AVAILABLE -DMKL_ILP64
+CXXFLAGS += -march=native -fopenmp -DMKL_AVAILABLE -DMKL_ILP64 
+
 LIBS = -L$(MKLROOT)/lib/intel64 \
        -lmkl_intel_ilp64 -lmkl_core -lmkl_intel_thread -liomp5 -lpthread -lm -ldl
 endif

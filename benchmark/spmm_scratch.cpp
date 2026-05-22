@@ -131,6 +131,7 @@ int main(int argc, char* argv[]){
     std::cout << "requested GB = "
           << (long double)N * sizeof(double) / (1024.0L*1024.0L*1024.0L) << "\n";
 
+
     // std::vector<double> C5(N);
     // printf("out matrix init\n");
 
@@ -142,62 +143,90 @@ int main(int argc, char* argv[]){
     // C5.clear(); C5.shrink_to_fit();
     // printf("warm up done\n");
 
-    printf("-------------------------------------------------------\n");
-    std::vector<double> C1(N);
-    // CSR * ROW MAJOR 
-    double total_ms = 0.0;
-    for (int r = 0; r < reps; ++r) {
-        auto t1 = std::chrono::high_resolution_clock::now();
-        omp_spmm(1.0, graph_csr, n1, n2, 0.0, D_row.data(), C1.data());
-        auto t2 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-        total_ms += ms;
-    }
-    std::cout << "omp spmm CSR + ROW MAJOR" << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
-    C1.clear();  C1.shrink_to_fit();
+    // printf("-------------------------------------------------------\n");
+    // std::vector<double> C1(N);
+    // // CSR * ROW MAJOR 
+    // double total_ms = 0.0;
+    // for (int r = 0; r < reps; ++r) {
+    //     auto t1 = std::chrono::high_resolution_clock::now();
+    //     omp_spmm(1.0, graph_csr, n1, n2, 0.0, D_row.data(), C1.data());
+    //     auto t2 = std::chrono::high_resolution_clock::now();
+    //     double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    //     total_ms += ms;
+    // }
+    // std::cout << "omp spmm CSR + ROW MAJOR" << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
+    // // C1.clear();  C1.shrink_to_fit();
 
-    printf("-------------------------------------------------------\n");
-    std::vector<double> C2(N);
-    // CSR * ROW MAJOR
-    total_ms = 0.0;
-    for (int r = 0; r < reps; ++r) {
-        auto t1 = std::chrono::high_resolution_clock::now();
-        check_mkl( mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph_csr, descr, SPARSE_LAYOUT_ROW_MAJOR,
-                D_row.data(), n2, n2, 0.0, C2.data(), n2) , "spmm 2 failed");
-        auto t2 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-        total_ms += ms;
-    }
-    std::cout << "mkl CSR + ROW MAJOR" << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
-    C2.clear();  C2.shrink_to_fit();
+    // printf("-------------------------------------------------------\n");
+    // std::vector<double> C2(N);
+    // // CSR * ROW MAJOR
+    // total_ms = 0.0;
+    // for (int r = 0; r < reps; ++r) {
+    //     auto t1 = std::chrono::high_resolution_clock::now();
+    //     check_mkl( mkl_sparse_d_mm(SPARSE_OPERATION_NON_TRANSPOSE, 1.0, graph_csr, descr, SPARSE_LAYOUT_ROW_MAJOR,
+    //             D_row.data(), n2, n2, 0.0, C2.data(), n2) , "spmm 2 failed");
+    //     auto t2 = std::chrono::high_resolution_clock::now();
+    //     double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    //     total_ms += ms;
+    // }
+    // std::cout << "mkl CSR + ROW MAJOR" << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
+    // // C2.clear();  C2.shrink_to_fit();
 
+    // printf("-------------------------------------------------------\n");
+    // std::vector<double> C3(N);
+    // for (int k : {16, 32, 64, 128, 256, 512}) {
+    //     auto t00 = std::chrono::high_resolution_clock::now();
+    //     std::vector<sparse_matrix_t> csr_blocks = split_csr_block_transpose(graph_csr, n1, k);
+    //     auto t01 = std::chrono::high_resolution_clock::now();
+    //     double time_blck = std::chrono::duration<double, std::milli>(t01 - t00).count();
+    //     std::cout << " csr row blocked into k " << k << " blocks in " << time_blck << " ms\n";
+    //     for (int bc : {32, 64, 128, 256, 512, 1024}) {
+    //         total_ms = 0.0;
+    //         for (int r = 0; r < reps; ++r) {
+    //             auto t1 = std::chrono::high_resolution_clock::now();
+    //             omp_spmm_csr_trans_blocks_jik_v1(1.0, csr_blocks, n1, n2, 0.0, D_row.data(), C3.data(), bc);
+    //             auto t2 = std::chrono::high_resolution_clock::now();
+    //             double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    //             total_ms += ms;
+    //         }
+    //         // compare_dense(C2, C3, "compare results");
+    //         std::cout << "omp spmm csr row blocked with bc " << bc << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
+    //     }
+    // }
+
+    /*
+    
     printf("-------------------------------------------------------\n");
     std::vector<double> C3(N);
-    for (int k : {2, 4, 8}) {
+    for (int k : {128, 256, 512, 1024}) {
+    // for (int k : {128}) {
         auto t00 = std::chrono::high_resolution_clock::now();
-        std::vector<sparse_matrix_t> csr_blocks = split_csr_block_transpose(graph_csr, n1, k);
+        std::vector<MKL_INT> block_starts;
+        std::vector<sparse_matrix_t> csr_blocks = split_csr_block_nnz_transpose(graph_csr, n1, k, block_starts);
         auto t01 = std::chrono::high_resolution_clock::now();
         double time_blck = std::chrono::duration<double, std::milli>(t01 - t00).count();
         std::cout << " csr row blocked into k " << k << " blocks in " << time_blck << " ms\n";
-        for (int bc : {32, 64, 128, 256, 512, 1024, 2048, 4096}) {
+        // for (int bc : {32, 64, 128, 256, 512, 1024}) {
+        for (int bc : {64}) {
             total_ms = 0.0;
             for (int r = 0; r < reps; ++r) {
                 auto t1 = std::chrono::high_resolution_clock::now();
-                omp_spmm_csr_trans_blocks_jik_v1(1.0, csr_blocks, n1, n2, 0.0, D_row.data(), C3.data(), bc);
+                omp_spmm_csr_trans_blocks_jik_v1(1.0, csr_blocks, n1, n2, 0.0, D_row.data(), C3.data(), bc, block_starts);
                 auto t2 = std::chrono::high_resolution_clock::now();
                 double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
                 total_ms += ms;
             }
+            // compare_dense(C2, C3, "compare results");
             std::cout << "omp spmm csr row blocked with bc " << bc << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
         }
     }
-    /*
+    
     
     printf("-------------------------------------------------------\n");
     std::vector<double> C3(N);
     // CSR * ROW MAJOR
     printf("col blocking dense \n");
-    for (int bc : {32, 64, 128, 256, 512, 1024, 2048, 4096}) {
+    for (int bc : {16, 32, 64, 128, 256, 512, 1024}) {
         total_ms = 0.0;
         for (int r = 0; r < reps; ++r) {
             auto t1 = std::chrono::high_resolution_clock::now();
@@ -212,6 +241,52 @@ int main(int argc, char* argv[]){
     // compare_dense(C2, C3, "compare results");
 
 
+
+    
+    printf("-------------------------------------------------------\n");
+    std::vector<double> C5(N);
+    // CSR * ROW MAJOR
+    printf("col blocking dense \n");
+    for (int bc : {16, 32, 64, 128, 256, 512, 1024}) {
+        auto D_blocked = reorder_to_col_blocks(D_row, n1, n2, bc);
+        total_ms = 0.0;
+        for (int r = 0; r < reps; ++r) {
+            auto t1 = std::chrono::high_resolution_clock::now();
+            omp_spmm_jik_v3(1.0, graph_csr, n1, n2, 0.0, D_blocked.data(), C5.data(), bc);
+            auto t2 = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+            total_ms += ms;
+        }
+        
+        std::cout << "omp blocked with bc " << bc << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
+        auto C5_row = restore_from_col_blocks(C5, n1, n2, bc);
+        compare_dense(C2, C5_row, "compare results");
+        // // NOW compare C3 vs C5_row — should match
+        // double max_err = 0.0;
+        // for (size_t i = 0; i < (size_t)n1 * n2; ++i)
+        //     max_err = std::max(max_err, std::abs(C2[i] - C5_row[i]));
+        // printf("Max error: %e\n", max_err);
+    }
+    C5.clear();  C5.shrink_to_fit();
+    // printf("-------------------------------------------------------\n");
+    // std::vector<double> C4(N);
+    // // CSR * ROW MAJOR
+    // printf("col blocking dense \n");
+    // for (int bc : {16, 32, 64, 128, 256, 512, 1024, 2048}) {
+    //     total_ms = 0.0;
+    //     for (int r = 0; r < reps; ++r) {
+    //         auto t1 = std::chrono::high_resolution_clock::now();
+    //         omp_spmm_jik_v2(1.0, graph_csr, n1, n2, 0.0, D_row.data(), C4.data(), bc);
+    //         auto t2 = std::chrono::high_resolution_clock::now();
+    //         double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    //         total_ms += ms;
+    //     }
+    //     // compare_dense(C2, C4, "compare results");
+    //     std::cout << "omp blocked with bc " << bc << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
+    // }
+    // C4.clear();  C4.shrink_to_fit();
+    
+    
     printf("-------------------------------------------------------\n");
     std::vector<double> C7(N);
     // CSR * ROW MAJOR
@@ -230,27 +305,59 @@ int main(int argc, char* argv[]){
         }
     }
     C7.clear();  C7.shrink_to_fit();
+    */
 
-    printf("-------------------------------------------------------\n");
-    std::vector<double> C8(N);
-    // CSR * ROW MAJOR
-    printf("col blocking dense + row blocking csr\n");
-    for (int bc : {128, 256, 512, 1024, 2048, 4096}) {
-        for (int bk : {2, 4, 8, 16}) {
-            total_ms = 0.0;
-            for (int r = 0; r < reps; ++r) {
-                auto t1 = std::chrono::high_resolution_clock::now();
-                omp_spmm_rik(1.0, graph_csr, n1, n2, 0.0, D_col.data(), C8.data(), (int) n1 / bk, bc);
-                auto t2 = std::chrono::high_resolution_clock::now();
-                double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-                total_ms += ms;
-            }
-            std::cout << "omp csr blocked with bk " << bk << " bc " << bc << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
-        }
-    }
+    // //Creating structure for csr 
+    // sparse_index_base_t indexing;
+    // MKL_INT  rows, cols;
+    // MKL_INT *rows_start = nullptr;
+    // MKL_INT *rows_end   = nullptr;
+    // MKL_INT *col_ind    = nullptr;
+    // double  *vals       = nullptr;
+    // check_mkl(
+    //     mkl_sparse_d_export_csr(
+    //         graph_csr, &indexing,
+    //         &rows, &cols,
+    //         &rows_start, &rows_end,
+    //         &col_ind, &vals
+    //     ),
+    //     "export csr failed"
+    // );
+    // // const MKL_INT base = (indexing == SPARSE_INDEX_BASE_ONE) ? 1 : 0;
+    
+    // const CSRMatrix& A = my_matrix; // or pass as argument
+    // MKL_INT* A.rowptr.data() = rows_start ;
+    // // const MKL_INT* rows_end   = /* you can ignore, or compute as rows_start+1 */;
+    // MKL_INT* A.colidx.data() = col_ind ;
+    // double*  A.values.data() = vals ;
+    // MKL_INT A.nrows = rows, A.ncols  = cols;
+    // sparse_index_base_t A.indexing = indexing;
+
+
+    // BlockedCSR bcsr = build_blocked_csr(graph_csr, n1, n1/2);
+
+    // printf("-------------------------------------------------------\n");
+    // std::vector<double> C8(N);
+    // // CSR * ROW MAJOR
+    // printf("col blocking dense + row blocking csr\n");
+    // for (int bc : {64}) {
+    //     for (int br : {4, 8, 16, 32, 64, 128, 256}) {
+    //         total_ms = 0.0;
+    //         for (int r = 0; r < reps; ++r) {
+    //             auto t1 = std::chrono::high_resolution_clock::now();
+    //             omp_spmm_csr_rowblck_nnz(1.0, graph_csr, n1, n2, 0.0, D_row.data(), C8.data(), br, bc);
+    //             auto t2 = std::chrono::high_resolution_clock::now();
+    //             double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    //             total_ms += ms;
+    //         }
+    //         std::cout << "omp csr blocked with br " << br << " bc " << bc << " average over " << reps << " runs: " << (total_ms / reps) << " ms\n";
+    //         // compare_dense(C2, C8, "compare results");
+    //     }  
+    //     printf("\n"); 
+    // }
     // compare_dense(C2, C8, "compare results");
 
-    */
+    
     // Quick sweep to find best b_c:
     // for (int bc : {32, 64, 128, 256, 512, 1024}) {
     //     total_ms = 0.0;
