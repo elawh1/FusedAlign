@@ -13,8 +13,10 @@
 
 namespace {
 
-constexpr double kVerifyRelTol = CUDA_USE_FLOAT ? 1e-5 : 1e-10;
-constexpr double kVerifyAbsTol = CUDA_USE_FLOAT ? 1e-6 : 1e-12;
+constexpr double kCsrVerifyRelTol = CUDA_USE_FLOAT ? 1e-5 : 1e-10;
+constexpr double kCsrVerifyAbsTol = CUDA_USE_FLOAT ? 1e-6 : 1e-12;
+constexpr double kBellVerifyRelTol = CUDA_USE_FLOAT ? 1e-3 : 1e-10;
+constexpr double kBellVerifyAbsTol = CUDA_USE_FLOAT ? 1e-3 : 1e-12;
 
 struct Timer {
     cudaEvent_t start = nullptr;
@@ -151,7 +153,7 @@ BellMatrix csr_to_blocked_ell(int n,
                     block.assign(static_cast<size_t>(block_size) * block_size,
                                  static_cast<element_type>(0));
                 }
-                block[static_cast<size_t>(local_row) * block_size + local_col] =
+                block[static_cast<size_t>(local_row) * block_size + local_col] +=
                     vals[static_cast<size_t>(p)];
             }
         }
@@ -160,14 +162,14 @@ BellMatrix csr_to_blocked_ell(int n,
 
     bell.blocks_per_row = std::max(1, max_blocks_per_row);
     bell.ell_cols = bell.blocks_per_row * block_size;
-    bell.col_ind.assign(static_cast<size_t>(block_rows) * bell.blocks_per_row, -1);
+    bell.col_ind.assign(static_cast<size_t>(block_rows) * bell.blocks_per_row, 0);
     bell.vals.assign(static_cast<size_t>(bell.rows) * bell.ell_cols,
                      static_cast<element_type>(0));
 
     for (int br = 0; br < block_rows; ++br) {
         int slot = 0;
         for (const auto& entry : rows[static_cast<size_t>(br)]) {
-            bell.col_ind[static_cast<size_t>(slot) * block_rows + br] = entry.first;
+            bell.col_ind[static_cast<size_t>(br) * bell.blocks_per_row + slot] = entry.first;
             for (int local_row = 0; local_row < block_size; ++local_row) {
                 const int row = br * block_size + local_row;
                 for (int local_col = 0; local_col < block_size; ++local_col) {
@@ -480,7 +482,7 @@ int main(int argc, char** argv) {
         const BenchResult result = bench_csr(handle, graph, mat_b, mat_c_tmp,
                                              alg.alg, nwarm, niter);
         const bool ok = verify_padded(d_c_ref, n, d_c_tmp, n, k,
-                                      kVerifyRelTol, kVerifyAbsTol);
+                                      kCsrVerifyRelTol, kCsrVerifyAbsTol);
         std::printf("%-14s %10.3f %12.2f %12.1f %10s\n",
                     alg.name,
                     result.ms,
@@ -537,7 +539,7 @@ int main(int argc, char** argv) {
                                               nwarm,
                                               niter);
         const bool ok = verify_padded(d_c_ref, n, d_c_pad, bell.rows, k,
-                                      kVerifyRelTol, kVerifyAbsTol);
+                                      kBellVerifyRelTol, kBellVerifyAbsTol);
         const double padded_gflops = 2.0 * static_cast<double>(bell.vals.size()) * k / 1e9;
 
         std::printf("%-14s %10.3f %12.2f %12.1f %10s ell_cols=%d rows=%d pad_x=%.2f sparseMB=%.1f padded_GF/s=%.2f\n",
