@@ -21,7 +21,7 @@ CudaMemoryTrackerState& tracker_state() {
 
 }  // namespace
 
-void parrot_cuda_memtracker_reset() {
+void cuda_memtracker_reset() {
     CudaMemoryTrackerState& state = tracker_state();
     state.live_allocations.clear();
     state.current_bytes = 0;
@@ -32,7 +32,7 @@ void parrot_cuda_memtracker_reset() {
     state.total_freed_bytes = 0;
 }
 
-void parrot_cuda_memtracker_report_peak(const char* label) {
+void cuda_memtracker_report_peak(const char* label) {
     const CudaMemoryTrackerState& state = tracker_state();
     const char* title = (label != nullptr) ? label : "entire run";
     const double mib = static_cast<double>(state.peak_bytes) / (1024.0 * 1024.0);
@@ -41,11 +41,13 @@ void parrot_cuda_memtracker_report_peak(const char* label) {
               << "  current tracked bytes: " << state.current_bytes << '\n'
               << "  allocation calls: " << state.allocation_calls << '\n'
               << "  free calls: " << state.free_calls << '\n'
+              << "  total allocated bytes: " << state.total_allocated_bytes << '\n'
+              << "  total freed bytes: " << state.total_freed_bytes << '\n'
               << "  live allocations: " << state.live_allocations.size()
               << std::endl;
 }
 
-cudaError_t parrot_cuda_malloc_tracked(void** ptr, size_t bytes, const char* file, int line) {
+cudaError_t cuda_malloc_tracked(void** ptr, size_t bytes, const char* file, int line) {
     cudaError_t status = cudaMalloc(ptr, bytes);
     if (status != cudaSuccess || ptr == nullptr || *ptr == nullptr) {
         return status;
@@ -69,7 +71,7 @@ cudaError_t parrot_cuda_malloc_tracked(void** ptr, size_t bytes, const char* fil
     return status;
 }
 
-cudaError_t parrot_cuda_free_tracked(void* ptr, const char* file, int line) {
+cudaError_t cuda_free_tracked(void* ptr, const char* file, int line) {
     cudaError_t status = cudaFree(ptr);
     if (status != cudaSuccess || ptr == nullptr) {
         return status;

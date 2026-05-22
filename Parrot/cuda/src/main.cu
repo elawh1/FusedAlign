@@ -1,10 +1,6 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <sstream>
-#include <algorithm>
-#include <fstream>
-#include <ctime> 
 #include <chrono>
 #include <iomanip>
 #include <utility>
@@ -13,7 +9,7 @@
 
 int main(int argc, char* argv[]){ 
 
-    parrot_cuda_memtracker_reset();
+    DEBUG_ONLY(cuda_memtracker_reset());
 
     std::string data_path;
     int g1_num_nodes, g2_num_nodes;
@@ -98,13 +94,13 @@ int main(int argc, char* argv[]){
     const size_t g2_rwr_size = static_cast<size_t>(g2_num_nodes) * static_cast<size_t>(l);
     const size_t cross_size = static_cast<size_t>(g1_num_nodes) * static_cast<size_t>(g2_num_nodes);
 
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_g1_rwr, g1_rwr_size * sizeof(element_type)));
+    CHECK_CUDA(CUDA_MALLOC(&d_g1_rwr, g1_rwr_size * sizeof(element_type)));
     auto g1_rwr_start = synced_now();
     get_batch_rwr_scores_cusparse_device(graph1_row_normalized_t, anchor_pairs.first, g1_num_nodes, 0.15, 100, d_g1_rwr, rwr_context);
     auto time_2 = synced_now();
     phase_timings.push_back({"graph1 RWR", std::chrono::duration_cast<milliseconds>(time_2 - g1_rwr_start).count()});
     DEBUG_ONLY(std::cout << "graph1 rwr computed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-g1_rwr_start).count() << " ms" << std::endl);
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_g2_rwr, g2_rwr_size * sizeof(element_type)));
+    CHECK_CUDA(CUDA_MALLOC(&d_g2_rwr, g2_rwr_size * sizeof(element_type)));
     auto g2_rwr_start = synced_now();
     get_batch_rwr_scores_cusparse_device(graph2_row_normalized_t, anchor_pairs.second, g2_num_nodes, 0.15, 100, d_g2_rwr, rwr_context);
     auto time_3 = synced_now();
@@ -114,7 +110,7 @@ int main(int argc, char* argv[]){
     destroy_cuda_csr(graph2_row_normalized_t);
     destroy_cuda_csr(graph1_row_normalized_t);
 
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_cross_rwr_dist, cross_size * sizeof(element_type)));
+    CHECK_CUDA(CUDA_MALLOC(&d_cross_rwr_dist, cross_size * sizeof(element_type)));
     auto cross_rwr_start = synced_now();
 
     //row normalize rwr for both graphs
@@ -125,30 +121,30 @@ int main(int argc, char* argv[]){
     if (use_attr) {
         const size_t g1_feat_dim = g1_feat.size() / static_cast<size_t>(g1_num_nodes);
         const size_t g2_feat_dim = g2_feat.size() / static_cast<size_t>(g2_num_nodes);
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_g1_feat, g1_feat.size() * sizeof(element_type)));
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_g2_feat, g2_feat.size() * sizeof(element_type)));
+        CHECK_CUDA(CUDA_MALLOC(&d_g1_feat, g1_feat.size() * sizeof(element_type)));
+        CHECK_CUDA(CUDA_MALLOC(&d_g2_feat, g2_feat.size() * sizeof(element_type)));
         CHECK_CUDA(cudaMemcpy(d_g1_feat, g1_feat.data(), g1_feat.size() * sizeof(element_type), cudaMemcpyHostToDevice));
         CHECK_CUDA(cudaMemcpy(d_g2_feat, g2_feat.data(), g2_feat.size() * sizeof(element_type), cudaMemcpyHostToDevice));
         l2_norm_inplace_device(d_g1_feat, g1_num_nodes, g1_feat_dim);
         l2_norm_inplace_device(d_g2_feat, g2_num_nodes, g2_feat_dim);
 
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_cross_attr_dist, cross_size * sizeof(element_type)));
+        CHECK_CUDA(CUDA_MALLOC(&d_cross_attr_dist, cross_size * sizeof(element_type)));
         get_normalized_neg_exp_dist_device(d_g1_feat, d_g2_feat, g1_num_nodes, g2_num_nodes, static_cast<int>(g1_feat_dim), d_cross_attr_dist);
 
         cublasHandle_t tmp_handle = nullptr;
         CHECK_CUBLAS(cublasCreate(&tmp_handle));
         const element_type alpha = static_cast<element_type>(0.5);
-        CHECK_CUBLAS(parrot_cublas_axpy(tmp_handle, static_cast<int>(cross_size), &alpha, d_cross_rwr_dist, 1, d_cross_attr_dist, 1));
+        CHECK_CUBLAS(cuda_cublas_axpy(tmp_handle, static_cast<int>(cross_size), &alpha, d_cross_rwr_dist, 1, d_cross_attr_dist, 1));
         CHECK_CUBLAS(cublasDestroy(tmp_handle));
 
-        CHECK_CUDA(PARROT_CUDA_FREE(d_cross_rwr_dist));
+        CHECK_CUDA(CUDA_FREE(d_cross_rwr_dist));
         d_cross_rwr_dist = d_cross_attr_dist;
         d_cross_attr_dist = nullptr;
     } else {
         cublasHandle_t tmp_handle = nullptr;
         CHECK_CUBLAS(cublasCreate(&tmp_handle));
         const element_type scale = static_cast<element_type>(1.5);
-        CHECK_CUBLAS(parrot_cublas_scal(tmp_handle, static_cast<int>(cross_size), &scale, d_cross_rwr_dist, 1));
+        CHECK_CUBLAS(cuda_cublas_scal(tmp_handle, static_cast<int>(cross_size), &scale, d_cross_rwr_dist, 1));
         CHECK_CUBLAS(cublasDestroy(tmp_handle));
     }
     //make the anchor links cross rwr dist zero
@@ -176,32 +172,33 @@ int main(int argc, char* argv[]){
     //Free some memory 
     g1_feat.clear(); g1_feat.shrink_to_fit();
     g2_feat.clear(); g2_feat.shrink_to_fit();
-    CHECK_CUDA(PARROT_CUDA_FREE(d_g1_rwr));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_g2_rwr));
+    CHECK_CUDA(CUDA_FREE(d_g1_rwr));
+    CHECK_CUDA(CUDA_FREE(d_g2_rwr));
     d_g1_rwr = nullptr;
     d_g2_rwr = nullptr;
-    if (d_g1_feat != nullptr) CHECK_CUDA(PARROT_CUDA_FREE(d_g1_feat));
-    if (d_g2_feat != nullptr) CHECK_CUDA(PARROT_CUDA_FREE(d_g2_feat));
+    if (d_g1_feat != nullptr) CHECK_CUDA(CUDA_FREE(d_g1_feat));
+    if (d_g2_feat != nullptr) CHECK_CUDA(CUDA_FREE(d_g2_feat));
     d_g1_feat = nullptr;
     d_g2_feat = nullptr;
 
     //Compute cross_dist
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_cross_dist, cross_size * sizeof(element_type)));
+    CHECK_CUDA(CUDA_MALLOC(&d_cross_dist, cross_size * sizeof(element_type)));
     auto time_10 = synced_now();
     get_product_rwr_mat_cusparse_device(graph1_row_normalized, graph2_row_normalized, d_cross_rwr_dist, g1_num_nodes, g2_num_nodes, 0.15, 0.75, d_cross_dist);
     auto time_11 = synced_now();
     phase_timings.push_back({"cross distance propagation", std::chrono::duration_cast<milliseconds>(time_11 - time_10).count()});
     DEBUG_ONLY(std::cout << "cross_dist computation completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_11-time_10).count() << " ms" << std::endl);
-    CHECK_CUDA(PARROT_CUDA_FREE(d_cross_rwr_dist));
+    CHECK_CUDA(CUDA_FREE(d_cross_rwr_dist));
     d_cross_rwr_dist = nullptr;
+    
     auto optimization_start = synced_now();
     std::vector<element_type> S = con_prox_pt_opt_device(graph1_row_normalized, graph2_row_normalized, g1_num_nodes, g2_num_nodes, avg_nnz1_per_n1, avg_nnz2_per_n2, d_cross_dist, intra_rwr1_masked_sddmm, 
         intra_rwr2_masked_sddmm, inner_iters, outer_iters, 5e-3, 5e-4, 5e-4, 1e-5, anchor_pairs, sparsify);
     auto time_12 = synced_now();
     phase_timings.push_back({"optimization", std::chrono::duration_cast<milliseconds>(time_12 - optimization_start).count()});
     DEBUG_ONLY(std::cout << "con_prox_pt_opt completed in " << std::chrono::duration_cast<std::chrono::milliseconds>(time_12-optimization_start).count() << " ms" << std::endl);
-    CHECK_CUDA(PARROT_CUDA_FREE(d_cross_dist));
-    d_cross_dist = nullptr;
+    cuda_free_and_null(d_cross_dist);
+    
     long long total_algorithm_ms = 0;
     for (const auto& phase : phase_timings) {
         total_algorithm_ms += phase.second;
@@ -245,7 +242,7 @@ int main(int argc, char* argv[]){
     destroy_cuda_csr(intra_rwr1_masked_sddmm);
     destroy_cuda_csr(graph2_row_normalized);
     destroy_cuda_csr(graph1_row_normalized);
-    parrot_cuda_memtracker_report_peak("entire code");
+    DEBUG_ONLY(cuda_memtracker_report_peak("entire code"));
 
     return 0;
 }

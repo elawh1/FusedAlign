@@ -94,66 +94,51 @@ int load_graph_csr(const char* path, bool directed,
 }
 
 // ── CSR → Blocked ELL ────────────────────────────────────────────────────────
-// N_pad must be a multiple of blk_size (cuSPARSE rows/cols requirement).
-// ellColInd stores block-column indices (col / blk_size).
-// ellValue layout is cuSPARSE Blocked-ELL row-major:
-//   [block_row][row_in_block][ell_slot][col_in_block].
-// Rows N..N_pad-1 are zero (padding). Padded ELL slots use col_ind=-1, val=0.
+// cuSPARSE BELL is a per-SCALAR-ROW format (1 × ellBlockSize blocks per slot):
+//   ellColInd[i*ellCols + j]               = block-column index bc = col/blk_size
+//   ellValue [(i*ellCols + j)*blk_size + k] = A[i, bc*blk_size + k]
+//
+// ellCols = max distinct block-cols per scalar row, rounded up to multiple of blk_size.
+// N_pad   = N rounded up to multiple of blk_size.
+// Returns ellCols.
 int csr_to_bell(int N, int N_pad, int blk_size,
                 const std::vector<int>& row_ptr,
                 const std::vector<int>& col_ind,
                 const std::vector<float>& vals,
                 std::vector<int>&   ell_col_ind,
                 std::vector<float>& ell_vals) {
-    const int block_rows = N_pad / blk_size;
-
-    // Pass 1: find max block-columns in any block-row. ellCols is measured in
-    // scalar columns of the Blocked-ELL value array, so each block slot adds
-    // blk_size columns.
-    int max_block_cols = 0;
-    for (int br = 0; br < block_rows; br++) {
+    // Pass 1: max distinct block-cols per scalar row → round up to multiple of blk_size
+    int max_blks = 0;
+    for (int i = 0; i < N; i++) {
         std::set<int> blks;
-        int row_begin = br * blk_size;
-        int row_end = std::min(row_begin + blk_size, N);
-        for (int i = row_begin; i < row_end; i++) {
-            for (int p = row_ptr[i]; p < row_ptr[i + 1]; p++)
-                blks.insert(col_ind[p] / blk_size);
-        }
-        max_block_cols = std::max(max_block_cols, (int)blks.size());
+        for (int p = row_ptr[i]; p < row_ptr[i + 1]; p++)
+            blks.insert(col_ind[p] / blk_size);
+        max_blks = std::max(max_blks, (int)blks.size());
     }
-    int ell_cols = max_block_cols * blk_size;
-    int ell_blocks = max_block_cols;
+    int ell_cols = ((max_blks + blk_size - 1) / blk_size) * blk_size;
 
-    // Allocate for N_pad rows; extra rows stay zero (padding).
-    ell_col_ind.assign((size_t)block_rows * ell_blocks, -1);
-    ell_vals.assign((size_t)N_pad * ell_cols, 0.0f);
+    // ellColInd: N_pad × ell_cols  (block-col index per row per slot)
+    // ellValue:  N_pad × ell_cols × blk_size  (blk_size values per slot per row)
+    ell_col_ind.assign((size_t)N_pad * ell_cols, 0);
+    ell_vals.assign((size_t)N_pad * ell_cols * blk_size, 0.0f);
 
-    // Pass 2: fill block rows
-    for (int br = 0; br < block_rows; br++) {
-        std::map<int, std::vector<float>> blk_map;
-        int row_begin = br * blk_size;
-        int row_end = std::min(row_begin + blk_size, N);
-        for (int i = row_begin; i < row_end; i++) {
-            int local_row = i - row_begin;
-            for (int p = row_ptr[i]; p < row_ptr[i + 1]; p++) {
-                int c = col_ind[p];
-                int bc = c / blk_size;
-                int local_col = c % blk_size;
-                if (!blk_map.count(bc))
-                    blk_map[bc].assign((size_t)blk_size * blk_size, 0.0f);
-                blk_map[bc][(size_t)local_row * blk_size + local_col] = vals[p];
-            }
+    // Pass 2: fill per scalar row
+    for (int i = 0; i < N; i++) {
+        std::map<int, std::vector<float>> blk_map;  // bc → values[0..blk_size-1]
+        for (int p = row_ptr[i]; p < row_ptr[i + 1]; p++) {
+            int c   = col_ind[p];
+            int bc  = c / blk_size;
+            int off = c % blk_size;
+            if (!blk_map.count(bc))
+                blk_map[bc].assign(blk_size, 0.0f);
+            blk_map[bc][off] = vals[p];
         }
         int slot = 0;
         for (auto& [bc, bv] : blk_map) {
-            ell_col_ind[(size_t)br * ell_blocks + slot] = bc;
-            for (int r = 0; r < blk_size; r++) {
-                for (int c = 0; c < blk_size; c++) {
-                    ell_vals[((size_t)row_begin + r) * ell_cols
-                             + (size_t)slot * blk_size + c] =
-                        bv[(size_t)r * blk_size + c];
-                }
-            }
+            ell_col_ind[(size_t)i * ell_cols + slot] = bc;  // block-col index
+            size_t base = ((size_t)i * ell_cols + slot) * blk_size;
+            for (int k = 0; k < blk_size; k++)
+                ell_vals[base + k] = bv[k];
             slot++;
         }
     }
@@ -300,22 +285,35 @@ bool verify(float* d_ref, float* d_cmp, size_t n, float tol = 1e-3f) {
 // d_ref:  N_ref  x K, col-major (leading dim N_ref)
 // d_cmp:  N_pad  x K, col-major (leading dim N_pad) — only first N rows checked
 bool verify_padded(float* d_ref, int N_ref, float* d_cmp, int N_pad,
-                   int N_rows, int K, float tol = 1e-3f) {
+                   int N_rows, int K, float rel_tol = 1e-3f, float abs_tol = 1e-4f) {
     std::vector<float> h_ref((size_t)N_ref * K), h_cmp((size_t)N_pad * K);
     CHECK_CUDA(cudaMemcpy(h_ref.data(), d_ref, h_ref.size() * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_cmp.data(), d_cmp, h_cmp.size() * sizeof(float), cudaMemcpyDeviceToHost));
-    float max_err = 0.0f;
+    float max_rel_err = 0.0f;
+    float max_abs_err = 0.0f;
+    float worst_ref = 0.0f, worst_cmp = 0.0f;
+    int worst_i = 0, worst_j = 0;
+    bool ok = true;
     for (int j = 0; j < K; j++) {
         for (int i = 0; i < N_rows; i++) {
             float ref = h_ref[(size_t)j * N_ref + i];
             float cmp = h_cmp[(size_t)j * N_pad + i];
-            float err = std::fabs(ref - cmp);
-            float scale = std::max(1.0f, std::fabs(ref));
-            max_err = std::max(max_err, err / scale);
+            float abs_err = std::fabs(ref - cmp);
+            float rel_err = abs_err / std::max(1.0f, std::fabs(ref));
+            if (rel_err > max_rel_err) {
+                max_rel_err = rel_err;
+                max_abs_err = abs_err;
+                worst_ref = ref;
+                worst_cmp = cmp;
+                worst_i = i;
+                worst_j = j;
+            }
+            if (abs_err > abs_tol + rel_tol * std::fabs(ref)) ok = false;
         }
     }
-    if (max_err > tol) {
-        printf("  [MISMATCH] max_rel_err = %e\n", max_err);
+    if (!ok) {
+        printf("  [MISMATCH] max_rel_err=%e max_abs_err=%e ref=%e cmp=%e at row=%d col=%d\n",
+               max_rel_err, max_abs_err, worst_ref, worst_cmp, worst_i, worst_j);
         return false;
     }
     return true;
@@ -331,7 +329,7 @@ int main(int argc, char** argv) {
     int nwarm = 5;
     int K     = argc > 2 ? atoi(argv[2]) : 64;
 
-    printf("=== SpMM Benchmark: CSR vs Blocked ELL ===\n");
+    printf("=== SpMM Benchmark: CSR vs Blocked ELL version 4 ===\n");
 
     std::vector<int>   h_rowptr, h_colind;
     std::vector<float> h_vals;
@@ -435,8 +433,8 @@ int main(int argc, char** argv) {
         int ell_cols = csr_to_bell(N, N_pad, blk, h_rowptr, h_colind, h_vals,
                                    h_ell_colinds, h_ell_vals);
 
-        size_t ell_ci_sz   = (size_t)(N_pad / blk) * (ell_cols / blk);
-        size_t ell_v_sz    = (size_t)N_pad * ell_cols;
+        size_t ell_ci_sz   = (size_t)N_pad * ell_cols;
+        size_t ell_v_sz    = (size_t)N_pad * ell_cols * blk;
         size_t dense_pad   = (size_t)N_pad * K;
 
         int*   d_ell_ci;
@@ -464,15 +462,18 @@ int main(int argc, char** argv) {
                               d_ell_ci, d_ell_v, d_B_pad, d_C_pad,
                               nwarm, niter);
 
-        bool ok = verify_padded(d_C_ref, N, d_C_pad, N_pad, N, K);
+        bool ok = verify_padded(d_C_ref, N, d_C_pad, N_pad, N, K, 1e-2f, 1e-4f);
         double mem_ell = (ell_ci_sz * sizeof(int) + ell_v_sz * sizeof(float)) / 1e6;
         double mem_csr = (nnz * (sizeof(int) + sizeof(float)) + (N+1)*sizeof(int)) / 1e6;
+        double padded_work_gflops = 2.0 * ell_v_sz * K / 1e9;
+        double padding_factor = (double)ell_v_sz / std::max(1, nnz);
 
         char name[32];
         snprintf(name, sizeof(name), "ELL_blk%d", blk);
-        printf("%-20s  %10.3f  %12.1f  %s  mem=%.0fMB (CSR=%.0fMB, ell_cols=%d, N_pad=%d)\n",
+        printf("%-20s  %10.3f  %12.1f  %s  mem=%.0fMB (CSR=%.0fMB, ell_cols=%d, N_pad=%d, pad_x=%.1f, padded_GF/s=%.1f)\n",
                name, ms, gflops_base / (ms * 1e-3),
-               ok ? "OK" : "FAIL", mem_ell, mem_csr, ell_cols, N_pad);
+               ok ? "OK" : "FAIL", mem_ell, mem_csr, ell_cols, N_pad,
+               padding_factor, padded_work_gflops / (ms * 1e-3));
 
         cudaFree(d_ell_ci);
         cudaFree(d_ell_v);
