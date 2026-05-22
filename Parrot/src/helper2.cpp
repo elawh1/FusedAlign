@@ -116,18 +116,19 @@ void load_config( const std::string& data_path, MKL_INT& g1_num_nodes, MKL_INT& 
     }
 }
 
-std::vector<double> readFileToVector(const std::string &filename, bool directed) {
+template <typename Real>
+std::vector<Real> readFileToVector(const std::string &filename, bool directed) {
     std::ifstream fin(filename);
-    std::vector<double> data;
+    std::vector<Real> data;
 
     if(directed) {
-        double val;
+        Real val;
         while (fin >> val) {
             data.push_back(val);
         }
     }
     if(!directed) {
-        double u, v;
+        Real u, v;
         while (fin >> u >> v) {
             // original edge
             data.push_back(u);
@@ -142,6 +143,9 @@ std::vector<double> readFileToVector(const std::string &filename, bool directed)
     }
     return data;
 }
+
+template std::vector<double> readFileToVector<double>(const std::string &filename, bool directed);
+template std::vector<float> readFileToVector<float>(const std::string &filename, bool directed);
 
 
 bool compare_sparse_exact( sparse_matrix_t A, sparse_matrix_t B, double eps) {
@@ -209,18 +213,24 @@ bool compare_sparse_exact( sparse_matrix_t A, sparse_matrix_t B, double eps) {
 }
 
 
-sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int m, int n) {
+template <typename Real>
+sparse_matrix_t make_mat_from_edgelist(const std::vector<Real>& edgelist, int m, int n) {
     MKL_INT nnz  = edgelist.size() / 2;
 	std::vector<MKL_INT> rows(nnz), cols(nnz);
-	std::vector<double> vals(nnz);
+	std::vector<Real> vals(nnz);
 	for(int i=0; i < nnz; i++) {
-        vals[i] = 1.0;
+        vals[i] = Real(1);
         rows[i] = (MKL_INT) edgelist[2*i];
         cols[i] = (MKL_INT) edgelist[2*i+1];	
     }
 
 	sparse_matrix_t A = nullptr;
-    auto st = mkl_sparse_d_create_coo(&A, SPARSE_INDEX_BASE_ZERO, m, n, nnz, rows.data(), cols.data(), vals.data());
+    sparse_status_t st;
+    if constexpr (std::is_same_v<Real, float>) {
+        st = mkl_sparse_s_create_coo(&A, SPARSE_INDEX_BASE_ZERO, m, n, nnz, rows.data(), cols.data(), vals.data());
+    } else {
+        st = mkl_sparse_d_create_coo(&A, SPARSE_INDEX_BASE_ZERO, m, n, nnz, rows.data(), cols.data(), vals.data());
+    }
     if (st != SPARSE_STATUS_SUCCESS) throw std::runtime_error("create_coo failed");
     mkl_sparse_optimize(A);
 
@@ -231,6 +241,9 @@ sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int 
 
     return A_csr;
 }
+
+template sparse_matrix_t make_mat_from_edgelist<double>(const std::vector<double>& edgelist, int m, int n);
+template sparse_matrix_t make_mat_from_edgelist<float>(const std::vector<float>& edgelist, int m, int n);
 
 // sparse_matrix_t make_mat_from_edgelist_symmetric(const std::vector<double>& edgelist, int m, int n) {
 //     MKL_INT nnz = 0;
@@ -600,22 +613,38 @@ inline void prepare_sparse_mm_once( sparse_matrix_t A, matrix_descr descr, MKL_I
     }
 }
 
-void daxpy_chunked(size_t N, double alpha, const double* x, double* y) {
+template <typename Real>
+void daxpy_chunked(size_t N, Real alpha, const Real* x, Real* y) {
     const size_t CHUNK = (size_t)std::numeric_limits<MKL_INT>::max();
     size_t off = 0;
     while (off < N) {
         size_t len = std::min(CHUNK, N - off);
-        cblas_daxpy((MKL_INT)len, alpha, x + off, 1, y + off, 1);
+        if constexpr (std::is_same_v<Real, float>) {
+            cblas_saxpy((MKL_INT)len, alpha, x + off, 1, y + off, 1);
+        } else {
+            cblas_daxpy((MKL_INT)len, alpha, x + off, 1, y + off, 1);
+        }
         off += len;
     }
 }
 
-void dscal_chunked(size_t N, double alpha, double* x) {
+template void daxpy_chunked<double>(size_t N, double alpha, const double* x, double* y);
+template void daxpy_chunked<float>(size_t N, float alpha, const float* x, float* y);
+
+template <typename Real>
+void dscal_chunked(size_t N, Real alpha, Real* x) {
     const size_t CHUNK = (size_t)std::numeric_limits<MKL_INT>::max();
     size_t off = 0;
     while (off < N) {
         size_t len = std::min(CHUNK, N - off);
-        cblas_dscal((MKL_INT)len, alpha, x + off, 1);
+        if constexpr (std::is_same_v<Real, float>) {
+            cblas_sscal((MKL_INT)len, alpha, x + off, 1);
+        } else {
+            cblas_dscal((MKL_INT)len, alpha, x + off, 1);
+        }
         off += len;
     }
 }
+
+template void dscal_chunked<double>(size_t N, double alpha, double* x);
+template void dscal_chunked<float>(size_t N, float alpha, float* x);

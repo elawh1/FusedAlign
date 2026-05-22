@@ -22,6 +22,7 @@
 #include <limits>
 #include <numeric>
 #include <utility>
+#include <type_traits>
 #include "debug_log.h"
 
 bool has_nan(const std::vector<double>& v);
@@ -40,11 +41,13 @@ double getMin(const std::vector<double>& v) ;
 
 void load_config(const std::string& data_path, MKL_INT& g1_num_nodes, MKL_INT& g2_num_nodes, bool& use_attr, bool& directed, int& inner_iters, int& outer_iters) ;
 
-std::vector<double> readFileToVector(const std::string &filename, bool directed) ;
+template <typename Real = double>
+std::vector<Real> readFileToVector(const std::string &filename, bool directed) ;
 
 bool compare_sparse_exact( sparse_matrix_t A, sparse_matrix_t B, double eps = 1e-9) ;
 
-sparse_matrix_t make_mat_from_edgelist(const std::vector<double>& edgelist, int m, int n) ;
+template <typename Real = double>
+sparse_matrix_t make_mat_from_edgelist(const std::vector<Real>& edgelist, int m, int n) ;
 
 void print_sparse_matrix_info(sparse_matrix_t A, const char* name = "matrix") ;
 
@@ -170,6 +173,8 @@ inline sparse_status_t blocked_mkl_sparse_d_mm( sparse_operation_t operation, do
 
 inline void prepare_sparse_mm_once( sparse_matrix_t A, matrix_descr descr, MKL_INT typical_block_cols, MKL_INT expected_calls  ) ;
 
-void daxpy_chunked(size_t N, double alpha, const double* x, double* y) ;
+template <typename Real = double>
+void daxpy_chunked(size_t N, Real alpha, const Real* x, Real* y) ;
 
-void dscal_chunked(size_t N, double alpha, double* x) ;
+template <typename Real = double>
+void dscal_chunked(size_t N, Real alpha, Real* x) ;
