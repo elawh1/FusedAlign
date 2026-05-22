@@ -29,23 +29,23 @@ void load_config(const std::string& data_path,
     }
 }
 
-std::vector<double> readFileToVector(const std::string& filename, bool directed) {
+std::vector<element_type> readFileToVector(const std::string& filename, bool directed) {
     std::ifstream fin(filename);
     if (!fin) {
         throw std::runtime_error("cannot open input file: " + filename);
     }
 
-    std::vector<double> data;
+    std::vector<element_type> data;
     if (directed) {
-        double val = 0.0;
+        element_type val = static_cast<element_type>(0.0);
         while (fin >> val) {
             data.push_back(val);
         }
         return data;
     }
 
-    double u = 0.0;
-    double v = 0.0;
+    element_type u = static_cast<element_type>(0.0);
+    element_type v = static_cast<element_type>(0.0);
     while (fin >> u >> v) {
         data.push_back(u);
         data.push_back(v);
@@ -57,7 +57,7 @@ std::vector<double> readFileToVector(const std::string& filename, bool directed)
     return data;
 }
 
-std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(std::vector<double>& H_vec) {
+std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(std::vector<element_type>& H_vec) {
     if (H_vec.size() % 2 != 0) {
         throw std::invalid_argument("anchor vector must contain pairs");
     }

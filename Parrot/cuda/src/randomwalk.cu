@@ -2,141 +2,14 @@
 
 namespace {
 
-struct BatchRwrSpmmConfig {
-    cusparseSpMMAlg_t alg;
-    const char* name;
-    const char* source;
-    bool preprocess_expected_to_help;
-};
-
-struct BatchRwrEarlyStopConfig {
-    bool enabled;
-    double tol;
-    int min_iters;
-    int check_every;
-    bool use_row_l2_normalized_diff;
-    const char* mode_name;
-    const char* source;
-};
-
-struct BatchRwrRestartConfig {
-    bool use_sparse_restart;
-    const char* mode_name;
-    const char* source;
-};
-
-BatchRwrSpmmConfig get_batch_rwr_spmm_config() {
-    const char* env_value = std::getenv("PARROT_RWR_SPMM_ALG");
-    if (env_value == nullptr) {
-        return {CUSPARSE_SPMM_ALG_DEFAULT, "default", "builtin", false};
-    }
-
-    const std::string requested(env_value);
-    if (requested == "default") {
-        return {CUSPARSE_SPMM_ALG_DEFAULT, "default", "env", false};
-    }
-    if (requested == "csr1" || requested == "csr_alg1") {
-        return {CUSPARSE_SPMM_CSR_ALG1, "csr_alg1", "env", true};
-    }
-    if (requested == "csr2" || requested == "csr_alg2") {
-        return {CUSPARSE_SPMM_CSR_ALG2, "csr_alg2", "env", false};
-    }
-    if (requested == "csr3" || requested == "csr_alg3") {
-        return {CUSPARSE_SPMM_CSR_ALG3, "csr_alg3", "env", true};
-    }
-
-#ifdef DEBUG
-    std::cerr << "unknown PARROT_RWR_SPMM_ALG='" << requested
-              << "', falling back to default" << std::endl;
-#endif
-    return {CUSPARSE_SPMM_ALG_DEFAULT, "default", "fallback", false};
-}
-
-BatchRwrRestartConfig get_batch_rwr_restart_config() {
-    const char* mode_env = std::getenv("PARROT_RWR_RESTART_MODE");
-    if (mode_env == nullptr) {
-        return {true, "sparse", "builtin"};
-    }
-
-    const std::string mode_value(mode_env);
-    if (mode_value == "sparse") {
-        return {true, "sparse", "env"};
-    }
-    if (mode_value == "dense") {
-        return {false, "dense", "env"};
-    }
-
-#ifdef DEBUG
-    std::cerr << "unknown PARROT_RWR_RESTART_MODE='" << mode_value
-              << "', falling back to sparse" << std::endl;
-#endif
-    return {true, "sparse", "fallback"};
-}
-
-BatchRwrEarlyStopConfig get_batch_rwr_early_stop_config() {
-    const char* enabled_env = std::getenv("PARROT_RWR_EARLY_STOP");
-    if (enabled_env == nullptr) {
-        return {false, 1e-6, 10, 5, true, "row_l2_normalized", "builtin"};
-    }
-
-    const std::string enabled_value(enabled_env);
-    const bool enabled = enabled_value == "1" || enabled_value == "true" || enabled_value == "on";
-    if (!enabled) {
-        return {false, 1e-6, 10, 5, true, "row_l2_normalized", "env"};
-    }
-
-    double tol = 1e-6;
-    int min_iters = 10;
-    int check_every = 5;
-    bool use_row_l2_normalized_diff = true;
-    const char* mode_name = "row_l2_normalized";
-
-    if (const char* tol_env = std::getenv("PARROT_RWR_EARLY_STOP_TOL")) {
-        char* end = nullptr;
-        const double parsed = std::strtod(tol_env, &end);
-        if (end != tol_env && parsed > 0.0) {
-            tol = parsed;
-        }
-    }
-    if (const char* min_iters_env = std::getenv("PARROT_RWR_EARLY_STOP_MIN_ITERS")) {
-        char* end = nullptr;
-        const long parsed = std::strtol(min_iters_env, &end, 10);
-        if (end != min_iters_env && parsed > 0) {
-            min_iters = static_cast<int>(parsed);
-        }
-    }
-    if (const char* check_every_env = std::getenv("PARROT_RWR_EARLY_STOP_CHECK_EVERY")) {
-        char* end = nullptr;
-        const long parsed = std::strtol(check_every_env, &end, 10);
-        if (end != check_every_env && parsed > 0) {
-            check_every = static_cast<int>(parsed);
-        }
-    }
-
-    if (const char* mode_env = std::getenv("PARROT_RWR_EARLY_STOP_MODE")) {
-        const std::string mode_value(mode_env);
-        if (mode_value == "raw") {
-            use_row_l2_normalized_diff = false;
-            mode_name = "raw";
-        } else if (mode_value == "row_l2_normalized" ||
-                   mode_value == "normalized" ||
-                   mode_value == "row_norm") {
-            use_row_l2_normalized_diff = true;
-            mode_name = "row_l2_normalized";
-        }
-    }
-
-    return {true, tol, min_iters, check_every, use_row_l2_normalized_diff, mode_name, "env"};
-}
-
-__global__ void abs_diff_block_max_kernel(const double* a, const double* b, size_t total, double* block_max) {
+__global__ void abs_diff_block_max_kernel(const element_type* a, const element_type* b, size_t total, element_type* block_max) {
     const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    double local_max = 0.0;
+    element_type local_max = static_cast<element_type>(0.0);
     if (idx < total) {
-        local_max = fabs(a[idx] - b[idx]);
+        local_max = static_cast<element_type>(fabs(static_cast<double>(a[idx] - b[idx])));
     }
 
-    __shared__ double partial[256];
+    __shared__ element_type partial[256];
     partial[threadIdx.x] = local_max;
     __syncthreads();
 
@@ -152,95 +25,45 @@ __global__ void abs_diff_block_max_kernel(const double* a, const double* b, size
     }
 }
 
-__global__ void write_restart_entries_kernel(double* e,
+__global__ void write_restart_entries_kernel(element_type* x,
                                              const int* anchors,
-                                             int n,
                                              int l,
-                                             double restart_prob) {
+                                             element_type restart_prob) {
     const int j = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (j >= l) {
         return;
     }
 
-    const size_t offset = static_cast<size_t>(anchors[j]) + static_cast<size_t>(j) * static_cast<size_t>(n);
-    e[offset] = restart_prob;
+    const size_t offset = static_cast<size_t>(anchors[j]) * static_cast<size_t>(l) + static_cast<size_t>(j);
+    x[offset] = restart_prob;
 }
 
-__global__ void add_restart_entries_kernel(double* x,
+__global__ void add_restart_entries_kernel(element_type* x,
                                            const int* anchors,
-                                           int n,
                                            int l,
-                                           double restart_prob) {
+                                           element_type restart_prob) {
     const int j = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (j >= l) {
         return;
     }
 
-    const size_t offset = static_cast<size_t>(anchors[j]) + static_cast<size_t>(j) * static_cast<size_t>(n);
+    const size_t offset = static_cast<size_t>(anchors[j]) * static_cast<size_t>(l) + static_cast<size_t>(j);
     x[offset] += restart_prob;
 }
 
-__global__ void compute_row_inv_l2_norms_kernel(const double* matrix,
-                                                size_t n,
-                                                size_t d,
-                                                double* inv_norms) {
-    const size_t row = static_cast<size_t>(blockIdx.x);
-    if (row >= n) {
+__global__ void row_major_to_col_major_kernel(const element_type* in,
+                                              int rows,
+                                              int cols,
+                                              element_type* out) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    if (idx >= total) {
         return;
     }
 
-    __shared__ double partial[256];
-    double sum = 0.0;
-    for (size_t col = static_cast<size_t>(threadIdx.x); col < d; col += blockDim.x) {
-        const double value = matrix[row + col * n];
-        sum += value * value;
-    }
-
-    partial[threadIdx.x] = sum;
-    __syncthreads();
-
-    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (threadIdx.x < stride) {
-            partial[threadIdx.x] += partial[threadIdx.x + stride];
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        inv_norms[row] = partial[0] > 0.0 ? 1.0 / std::sqrt(partial[0]) : 0.0;
-    }
-}
-
-__global__ void normalized_abs_diff_block_max_kernel(const double* a,
-                                                     const double* b,
-                                                     const double* inv_norms_a,
-                                                     const double* inv_norms_b,
-                                                     size_t n,
-                                                     size_t total,
-                                                     double* block_max) {
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    double local_max = 0.0;
-    if (idx < total) {
-        const size_t row = idx % n;
-        const double a_normalized = a[idx] * inv_norms_a[row];
-        const double b_normalized = b[idx] * inv_norms_b[row];
-        local_max = fabs(a_normalized - b_normalized);
-    }
-
-    __shared__ double partial[256];
-    partial[threadIdx.x] = local_max;
-    __syncthreads();
-
-    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (threadIdx.x < stride) {
-            partial[threadIdx.x] = fmax(partial[threadIdx.x], partial[threadIdx.x + stride]);
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        block_max[blockIdx.x] = partial[0];
-    }
+    const int row = static_cast<int>(idx / static_cast<size_t>(cols));
+    const int col = static_cast<int>(idx % static_cast<size_t>(cols));
+    out[static_cast<size_t>(row) + static_cast<size_t>(col) * static_cast<size_t>(rows)] = in[idx];
 }
 
 void ensure_batch_rwr_handles(BatchRwrContext& context) {
@@ -272,21 +95,16 @@ void ensure_batch_rwr_dense_capacity(BatchRwrContext& context, size_t dense_elem
 
     reset_batch_rwr_dense_mats(context);
     if (context.d_x != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_x));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_x));
         context.d_x = nullptr;
     }
     if (context.d_xnext != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_xnext));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_xnext));
         context.d_xnext = nullptr;
     }
-    if (context.d_e != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_e));
-        context.d_e = nullptr;
-    }
 
-    CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&context.d_x), dense_elems * sizeof(double)));
-    CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&context.d_xnext), dense_elems * sizeof(double)));
-    CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&context.d_e), dense_elems * sizeof(double)));
+    CHECK_CUDA(PARROT_CUDA_MALLOC(reinterpret_cast<void**>(&context.d_x), dense_elems * sizeof(element_type)));
+    CHECK_CUDA(PARROT_CUDA_MALLOC(reinterpret_cast<void**>(&context.d_xnext), dense_elems * sizeof(element_type)));
     context.dense_capacity = dense_elems;
 }
 
@@ -301,16 +119,16 @@ void ensure_batch_rwr_dense_mats(BatchRwrContext& context, int n, int l) {
     reset_batch_rwr_dense_mats(context);
     CHECK_CUSPARSE(cusparseCreateDnMat(
         &context.mat_x,
-        n, l, n,
+        n, l, l,
         context.d_x,
-        CUDA_R_64F,
-        CUSPARSE_ORDER_COL));
+        PARROT_CUDA_R_TYPE,
+        CUSPARSE_ORDER_ROW));
     CHECK_CUSPARSE(cusparseCreateDnMat(
         &context.mat_xnext,
-        n, l, n,
+        n, l, l,
         context.d_xnext,
-        CUDA_R_64F,
-        CUSPARSE_ORDER_COL));
+        PARROT_CUDA_R_TYPE,
+        CUSPARSE_ORDER_ROW));
     context.current_n = n;
     context.current_l = l;
 }
@@ -320,12 +138,12 @@ void ensure_batch_rwr_workspace(BatchRwrContext& context, size_t required_bytes)
         return;
     }
     if (context.d_buffer != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_buffer));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_buffer));
         context.d_buffer = nullptr;
         context.buffer_capacity = 0;
     }
     if (required_bytes > 0) {
-        CHECK_CUDA(cudaMalloc(&context.d_buffer, required_bytes));
+        CHECK_CUDA(PARROT_CUDA_MALLOC(&context.d_buffer, required_bytes));
         context.buffer_capacity = required_bytes;
     }
 }
@@ -335,60 +153,45 @@ void ensure_batch_rwr_anchor_capacity(BatchRwrContext& context, size_t required_
         return;
     }
     if (context.d_anchors != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_anchors));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_anchors));
         context.d_anchors = nullptr;
         context.anchor_capacity = 0;
     }
     if (required_anchors > 0) {
-        CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&context.d_anchors), required_anchors * sizeof(int)));
+        CHECK_CUDA(PARROT_CUDA_MALLOC(reinterpret_cast<void**>(&context.d_anchors), required_anchors * sizeof(int)));
         context.anchor_capacity = required_anchors;
     }
 }
 
-void ensure_batch_rwr_diff_capacity(BatchRwrContext& context, size_t required_blocks) {
-    if (context.diff_capacity >= required_blocks) {
-        return;
-    }
-    if (context.d_block_max != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_block_max));
-        context.d_block_max = nullptr;
-        context.diff_capacity = 0;
-    }
-    if (required_blocks > 0) {
-        CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&context.d_block_max), required_blocks * sizeof(double)));
-        context.diff_capacity = required_blocks;
-    }
+bool cross_timing_enabled() {
+#ifdef DEBUG
+    return true;
+#else
+    return false;
+#endif
 }
 
-void ensure_batch_rwr_row_norm_capacity(BatchRwrContext& context, size_t required_rows) {
-    if (context.row_norm_capacity >= required_rows) {
-        return;
+using CrossClock = std::chrono::high_resolution_clock;
+
+CrossClock::time_point cross_timing_now(bool enabled) {
+    if (enabled) {
+        CHECK_CUDA(cudaDeviceSynchronize());
     }
-    if (context.d_row_inv_norms_x != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_row_inv_norms_x));
-        context.d_row_inv_norms_x = nullptr;
+    return CrossClock::now();
+}
+
+long long cross_timing_elapsed_ms(bool enabled, const CrossClock::time_point& start) {
+    if (!enabled) {
+        return 0;
     }
-    if (context.d_row_inv_norms_xnext != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_row_inv_norms_xnext));
-        context.d_row_inv_norms_xnext = nullptr;
-    }
-    context.row_norm_capacity = 0;
-    if (required_rows > 0) {
-        CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&context.d_row_inv_norms_x), required_rows * sizeof(double)));
-        CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&context.d_row_inv_norms_xnext), required_rows * sizeof(double)));
-        context.row_norm_capacity = required_rows;
-    }
+    CHECK_CUDA(cudaDeviceSynchronize());
+    const auto end = CrossClock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 }
 
 }
 
-void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors, int n, float restart_prob, int max_iters, double* d_X_out) {
-    BatchRwrContext context;
-    get_batch_rwr_scores_cusparse_device(graph, std::move(anchors), n, restart_prob, max_iters, d_X_out, context);
-    destroy_batch_rwr_context(context);
-}
-
-void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors, int n, float restart_prob, int max_iters, double* d_X_out, BatchRwrContext& context) {
+void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors, int n, float restart_prob, int max_iters, element_type* d_X_out, BatchRwrContext& context) {
 #ifdef DEBUG
     using Clock = std::chrono::high_resolution_clock;
     auto elapsed_ms = [](const Clock::time_point& start, const Clock::time_point& end) {
@@ -398,21 +201,23 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const int call_id = ++batch_rwr_call_counter;
 #endif
 
-    const int rows = static_cast<int>(n);
-    const int cols = static_cast<int>(n);
-    const int nnz = graph.nnz;
     const int l = static_cast<int>(anchors.size());
     const size_t dense_elems = static_cast<size_t>(n) * static_cast<size_t>(l);
     const int total_updates = std::max(0, max_iters - 1);
     const unsigned int anchor_blocks = static_cast<unsigned int>((static_cast<unsigned int>(l) + 255U) / 256U);
-    const unsigned int diff_blocks = static_cast<unsigned int>((dense_elems + 255U) / 256U);
-    const BatchRwrRestartConfig restart_config = get_batch_rwr_restart_config();
+    const ParrotSpmmAlgorithm spmm_alg = select_parrot_spmm_algorithm("PARROT_RWR_SPMM_ALG");
 
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
 
     const auto seed_build_start = Clock::now();
 #endif
+    for (int j = 0; j < l; ++j) {
+        const int anchor = anchors[static_cast<size_t>(j)];
+        if (anchor < 0 || anchor >= n) {
+            throw std::out_of_range("anchor out of range inside get_batch_rwr_scores_cusparse_device");
+        }
+    }
 #ifdef DEBUG
     const auto seed_build_end = Clock::now();
 
@@ -438,23 +243,13 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
                               static_cast<size_t>(l) * sizeof(int),
                               cudaMemcpyHostToDevice));
     }
-    if (restart_config.use_sparse_restart) {
-        CHECK_CUDA(cudaMemset(context.d_x, 0, dense_elems * sizeof(double)));
-        if (anchor_blocks > 0) {
-            write_restart_entries_kernel<<<anchor_blocks, 256>>>(
-                context.d_x, context.d_anchors, n, l, static_cast<double>(restart_prob));
-            CHECK_CUDA(cudaGetLastError());
-        }
-    } else {
-        CHECK_CUDA(cudaMemset(context.d_e, 0, dense_elems * sizeof(double)));
-        if (anchor_blocks > 0) {
-            write_restart_entries_kernel<<<anchor_blocks, 256>>>(
-                context.d_e, context.d_anchors, n, l, static_cast<double>(restart_prob));
-            CHECK_CUDA(cudaGetLastError());
-        }
-        CHECK_CUDA(cudaMemcpy(context.d_x, context.d_e, dense_elems * sizeof(double), cudaMemcpyDeviceToDevice));
+    CHECK_CUDA(cudaMemset(context.d_x, 0, dense_elems * sizeof(element_type)));
+    CHECK_CUDA(cudaMemset(context.d_xnext, 0, dense_elems * sizeof(element_type)));
+    if (anchor_blocks > 0) {
+        write_restart_entries_kernel<<<anchor_blocks, 256>>>(
+            context.d_x, context.d_anchors, l, static_cast<element_type>(restart_prob));
+        CHECK_CUDA(cudaGetLastError());
     }
-    CHECK_CUDA(cudaMemset(context.d_xnext, 0, dense_elems * sizeof(double)));
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
     const auto upload_end = Clock::now();
@@ -467,26 +262,14 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         context.mat_a = nullptr;
     }
 
-    CHECK_CUSPARSE(cusparseCreateCsr(
-        &context.mat_a,
-        rows, cols, nnz,
-        graph.d_row_offsets,
-        graph.d_col_ind,
-        graph.d_vals,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUDA_R_64F));
+    CudaSpMatView mat_a_view = create_spmm_matrix_view(graph);
+    context.mat_a = mat_a_view.descr;
 #ifdef DEBUG
     const auto spmat_setup_end = Clock::now();
 #endif
     
-    const double alpha = static_cast<double>(1.0 - restart_prob);
-    const double beta = 1.0;
-    const BatchRwrSpmmConfig spmm_config = get_batch_rwr_spmm_config();
-    const BatchRwrEarlyStopConfig early_stop_config = get_batch_rwr_early_stop_config();
-    const bool enable_convergence_checks =
-        early_stop_config.enabled && total_updates > 0 && diff_blocks > 0;
+    const element_type alpha = static_cast<element_type>(1.0 - restart_prob);
+    const element_type beta = static_cast<element_type>(1.0);
 
     size_t bufferSize = 0;
 #ifdef DEBUG
@@ -501,8 +284,8 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         context.mat_x,
         &beta,
         context.mat_xnext,
-        CUDA_R_64F,
-        spmm_config.alg,
+        PARROT_CUDA_R_TYPE,
+        spmm_alg.value,
         &bufferSize));
 
 #ifdef DEBUG
@@ -518,8 +301,8 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         context.mat_x,
         &beta,
         context.mat_xnext,
-        CUDA_R_64F,
-        spmm_config.alg,
+        PARROT_CUDA_R_TYPE,
+        spmm_alg.value,
         context.d_buffer));
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
@@ -529,16 +312,8 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     long long iter_spmm_time = 0;
     long long iter_add_time = 0;
     long long iter_swap_time = 0;
-    long long iter_convergence_time = 0;
 #endif
-    if (enable_convergence_checks) {
-        ensure_batch_rwr_diff_capacity(context, diff_blocks);
-    }
-
-    double* d_final = context.d_x;
     int iterations_run = 0;
-    int convergence_checks = 0;
-    double last_checked_max_diff = -1.0;
 
     for (int i = 0; i < total_updates; ++i) {
 #ifdef DEBUG
@@ -553,11 +328,10 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
             context.mat_x,
             &beta,
             context.mat_xnext,
-            CUDA_R_64F,
-            spmm_config.alg,
+            PARROT_CUDA_R_TYPE,
+            spmm_alg.value,
             context.d_buffer));
 
-        double one = 1.0;
 #ifdef DEBUG
         CHECK_CUDA(cudaDeviceSynchronize());
         const auto spmm_end = Clock::now();
@@ -565,21 +339,10 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
 
         const auto add_start = spmm_end;
 #endif
-        if (restart_config.use_sparse_restart) {
-            if (anchor_blocks > 0) {
-                add_restart_entries_kernel<<<anchor_blocks, 256>>>(
-                    context.d_xnext, context.d_anchors, n, l, static_cast<double>(restart_prob));
-                CHECK_CUDA(cudaGetLastError());
-            }
-        } else {
-            CHECK_CUBLAS(cublasDaxpy(
-                context.cublas,
-                n * l,
-                &one,
-                context.d_e,
-                1,
-                context.d_xnext,
-                1));
+        if (anchor_blocks > 0) {
+            add_restart_entries_kernel<<<anchor_blocks, 256>>>(
+                context.d_xnext, context.d_anchors, l, static_cast<element_type>(restart_prob));
+            CHECK_CUDA(cudaGetLastError());
         }
 
 #ifdef DEBUG
@@ -588,66 +351,13 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         iter_add_time += elapsed_ms(add_start, add_end);
 #endif
         ++iterations_run;
-        bool converged = false;
-        const bool should_check_convergence =
-            enable_convergence_checks &&
-            iterations_run >= early_stop_config.min_iters &&
-            ((iterations_run % early_stop_config.check_every) == 0 || i == total_updates - 1);
-
-        if (should_check_convergence) {
-#ifdef DEBUG
-            const auto convergence_start = add_end;
-#endif
-            if (early_stop_config.use_row_l2_normalized_diff) {
-                ensure_batch_rwr_row_norm_capacity(context, static_cast<size_t>(n));
-                compute_row_inv_l2_norms_kernel<<<static_cast<unsigned int>(n), 256>>>(
-                    context.d_xnext, static_cast<size_t>(n), static_cast<size_t>(l), context.d_row_inv_norms_xnext);
-                compute_row_inv_l2_norms_kernel<<<static_cast<unsigned int>(n), 256>>>(
-                    context.d_x, static_cast<size_t>(n), static_cast<size_t>(l), context.d_row_inv_norms_x);
-                normalized_abs_diff_block_max_kernel<<<diff_blocks, 256>>>(
-                    context.d_xnext,
-                    context.d_x,
-                    context.d_row_inv_norms_xnext,
-                    context.d_row_inv_norms_x,
-                    static_cast<size_t>(n),
-                    dense_elems,
-                    context.d_block_max);
-            } else {
-                abs_diff_block_max_kernel<<<diff_blocks, 256>>>(
-                    context.d_xnext, context.d_x, dense_elems, context.d_block_max);
-            }
-            CHECK_CUDA(cudaGetLastError());
-            int max_idx = 0;
-            last_checked_max_diff = 0.0;
-            CHECK_CUBLAS(cublasIdamax(context.cublas, static_cast<int>(diff_blocks), context.d_block_max, 1, &max_idx));
-            if (max_idx > 0) {
-                CHECK_CUDA(cudaMemcpy(&last_checked_max_diff,
-                                      context.d_block_max + (max_idx - 1),
-                                      sizeof(double),
-                                      cudaMemcpyDeviceToHost));
-            }
-            ++convergence_checks;
-            converged = last_checked_max_diff < early_stop_config.tol;
-#ifdef DEBUG
-            CHECK_CUDA(cudaDeviceSynchronize());
-            const auto convergence_end = Clock::now();
-            iter_convergence_time += elapsed_ms(convergence_start, convergence_end);
-#endif
-        }
-
-        if (converged) {
-            d_final = context.d_xnext;
-            break;
-        }
 
 #ifdef DEBUG
-        const auto swap_start =
-            should_check_convergence ? Clock::now() : add_end;
+        const auto swap_start = add_end;
 #endif
         std::swap(context.d_x, context.d_xnext);
         CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_x, context.d_x));
         CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_xnext, context.d_xnext));
-        d_final = context.d_x;
 #ifdef DEBUG
         const auto swap_end = Clock::now();
         iter_swap_time += elapsed_ms(swap_start, swap_end);
@@ -659,14 +369,18 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
 
     const auto output_copy_start = Clock::now();
 #endif
-    CHECK_CUDA(cudaMemcpy(d_X_out, d_final, dense_elems * sizeof(double), cudaMemcpyDeviceToDevice));
+    if (dense_elems > 0) {
+        const unsigned int transpose_blocks = static_cast<unsigned int>((dense_elems + 255) / 256);
+        row_major_to_col_major_kernel<<<transpose_blocks, 256>>>(context.d_x, n, l, d_X_out);
+        CHECK_CUDA(cudaGetLastError());
+    }
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
     const auto output_copy_end = Clock::now();
 
     DEBUG_ONLY(std::cout
         << "batch RWR call " << call_id
-        << " (n=" << n << ", l=" << l << ", nnz=" << nnz << ")\n"
+        << " (n=" << n << ", l=" << l << ", nnz=" << graph.nnz << ")\n"
         << "  seed build: " << elapsed_ms(seed_build_start, seed_build_end) << " ms\n"
         << "  context setup: " << elapsed_ms(context_setup_start, context_setup_end) << " ms"
         << " [handles=" << (reused_handles ? "reused" : "new")
@@ -678,29 +392,13 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         << " [mat_a=" << (recreated_mat_a ? "recreated" : "created") << "]\n"
         << "  spmm preprocess: " << elapsed_ms(preprocess_start, preprocess_end) << " ms"
         << " [workspace=" << (reused_workspace ? "reused" : "resized") << ", bytes=" << bufferSize << "]\n"
-        << "  spmm alg: " << spmm_config.name
-        << " [source=" << spmm_config.source
-        << ", preprocess_hint=" << (spmm_config.preprocess_expected_to_help ? "expected_helpful" : "unknown_or_no_effect") << "]\n"
-        << "  restart mode: " << restart_config.mode_name
-        << " [source=" << restart_config.source << "]\n"
-        << "  early stop: " << (early_stop_config.enabled ? "enabled" : "disabled")
-        << " [source=" << early_stop_config.source
-        << ", tol=" << early_stop_config.tol
-        << ", min_iters=" << early_stop_config.min_iters
-        << ", check_every=" << early_stop_config.check_every
-        << ", mode=" << early_stop_config.mode_name << "]\n"
+        << "  spmm alg: " << spmm_alg.name << "\n"
+        << "  dense order: row_major\n"
         << "  iteration loop: " << elapsed_ms(iter_loop_start, iter_loop_end) << " ms\n"
         << "    spmm: " << iter_spmm_time << " ms\n"
-        << "    add E: " << iter_add_time << " ms\n"
-        << "    convergence check: " << iter_convergence_time << " ms\n"
+        << "    add sparse restart: " << iter_add_time << " ms\n"
         << "    swap/rebind: " << iter_swap_time << " ms\n"
         << "    iterations executed: " << iterations_run << " / " << total_updates << "\n"
-        << "    convergence checks: " << convergence_checks
-        << (enable_convergence_checks ? "" : " (disabled)")
-        << "\n"
-        << "    last checked max diff: " << last_checked_max_diff
-        << (enable_convergence_checks && last_checked_max_diff >= 0.0 && last_checked_max_diff < early_stop_config.tol ? " (stopped early)" : "")
-        << "\n"
         << "  output copy: " << elapsed_ms(output_copy_start, output_copy_end) << " ms\n"
         << "  total inside function: " << elapsed_ms(seed_build_start, output_copy_end) << " ms"
         << std::endl);
@@ -723,262 +421,288 @@ void destroy_batch_rwr_context(BatchRwrContext& context) {
         context.cublas = nullptr;
     }
     if (context.d_x != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_x));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_x));
         context.d_x = nullptr;
     }
     if (context.d_xnext != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_xnext));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_xnext));
         context.d_xnext = nullptr;
     }
-    if (context.d_e != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_e));
-        context.d_e = nullptr;
-    }
     if (context.d_anchors != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_anchors));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_anchors));
         context.d_anchors = nullptr;
     }
-    if (context.d_block_max != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_block_max));
-        context.d_block_max = nullptr;
-    }
-    if (context.d_row_inv_norms_x != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_row_inv_norms_x));
-        context.d_row_inv_norms_x = nullptr;
-    }
-    if (context.d_row_inv_norms_xnext != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_row_inv_norms_xnext));
-        context.d_row_inv_norms_xnext = nullptr;
-    }
     if (context.d_buffer != nullptr) {
-        CHECK_CUDA(cudaFree(context.d_buffer));
+        CHECK_CUDA(PARROT_CUDA_FREE(context.d_buffer));
         context.d_buffer = nullptr;
     }
     context.dense_capacity = 0;
     context.anchor_capacity = 0;
-    context.diff_capacity = 0;
-    context.row_norm_capacity = 0;
     context.buffer_capacity = 0;
 }
 
 
 void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                                          const CudaCsrMatrix& graph2_normalized,
-                                         const double* d_in_cross_dist,
+                                         const element_type* d_in_cross_dist,
                                          int n1, int n2,
-                                         double rwr_restart_prob, double gamma,
-                                         double* d_out_cross_dist,
-                                         int max_iters, double tol) {
+                                         element_type rwr_restart_prob, element_type gamma,
+                                         element_type* d_out_cross_dist_result,
+                                         int max_iters, element_type tol) {
     const size_t N = static_cast<size_t>(n1) * static_cast<size_t>(n2);
-    double* d_prev = d_out_cross_dist;
-    double* d_next = nullptr;
-    double *d_temp = nullptr;
-    double *d_block_max = nullptr;
+    const ParrotSpmmAlgorithm spmm_alg = select_parrot_spmm_algorithm("PARROT_CROSS_SPMM_ALG");
+    DEBUG_ONLY(std::cout << "cross propagation spmm alg: " << spmm_alg.name << std::endl);
+    DEBUG_ONLY(std::cout << "cross propagation dense order: mixed_col_major" << std::endl);
 
-    CHECK_CUDA(cudaMalloc((void**)&d_next,               N * sizeof(double)));
-    CHECK_CUDA(cudaMalloc((void**)&d_temp,               N * sizeof(double)));
+    const bool timing_enabled = cross_timing_enabled();
+    const auto total_start = cross_timing_now(timing_enabled);
+    long long allocation_ms = 0;
+    long long setup_ms = 0;
+    long long preprocess_ms = 0;
+    long long loop_spmm1_ms = 0;
+    long long loop_spmm2_ms = 0;
+    long long loop_restart_ms = 0;
+    long long loop_diff_ms = 0;
+    long long loop_swap_ms = 0;
+    long long final_copy_ms = 0;
+    long long cleanup_ms = 0;
+    int iterations_run = 0;
+    auto section_start = cross_timing_now(timing_enabled);
+
+    element_type* d_out_cross_dist_old = d_out_cross_dist_result;
+    element_type* d_out_cross_dist = nullptr;
+    element_type* d_out_cross_dist_work = nullptr;
+    element_type* d_temp = nullptr;
+    element_type* d_block_max = nullptr;
+
+    CHECK_CUDA(PARROT_CUDA_MALLOC((void**)&d_out_cross_dist_work, N * sizeof(element_type)));
+    d_out_cross_dist = d_out_cross_dist_work;
+    CHECK_CUDA(PARROT_CUDA_MALLOC((void**)&d_temp,               N * sizeof(element_type)));
     const unsigned int diff_blocks = static_cast<unsigned int>((N + 255) / 256);
-    CHECK_CUDA(cudaMalloc((void**)&d_block_max, diff_blocks * sizeof(double)));
+    CHECK_CUDA(PARROT_CUDA_MALLOC((void**)&d_block_max, diff_blocks * sizeof(element_type)));
 
-    CHECK_CUDA(cudaMemset(d_prev, 0, N * sizeof(double)));
-    CHECK_CUDA(cudaMemset(d_temp, 0, N * sizeof(double)));
+    CHECK_CUDA(cudaMemset(d_out_cross_dist_old, 0, N * sizeof(element_type)));
+    CHECK_CUDA(cudaMemset(d_temp, 0, N * sizeof(element_type)));
+    allocation_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
+    section_start = cross_timing_now(timing_enabled);
     cusparseHandle_t sp_handle = nullptr;
     cublasHandle_t blas_handle = nullptr;
     CHECK_CUSPARSE(cusparseCreate(&sp_handle));
     CHECK_CUBLAS(cublasCreate(&blas_handle));
 
-    cusparseSpMatDescr_t G1 = nullptr, G2 = nullptr;
-    cusparseDnMatDescr_t PREV_n1xn2 = nullptr;
-    cusparseDnMatDescr_t TEMP_n1xn2 = nullptr;
-    cusparseDnMatDescr_t TEMP_t_n2xn1 = nullptr;
-    cusparseDnMatDescr_t NEXT_t_n2xn1 = nullptr;
+    CudaSpMatView G1 = create_spmm_matrix_view(graph1_normalized);
+    CudaSpMatView G2 = create_spmm_matrix_view(graph2_normalized);
 
-    CHECK_CUSPARSE(cusparseCreateCsr(
-        &G1,
-        graph1_normalized.rows, graph1_normalized.cols, graph1_normalized.nnz,
-        graph1_normalized.d_row_offsets,
-        graph1_normalized.d_col_ind,
-        graph1_normalized.d_vals,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUDA_R_64F));
+    cusparseDnMatDescr_t out_cross_dist_old_t_n2xn1 = nullptr;
+    cusparseDnMatDescr_t temp_t_n2xn1 = nullptr;
+    cusparseDnMatDescr_t temp_n1xn2 = nullptr;
+    cusparseDnMatDescr_t out_cross_dist_n1xn2 = nullptr;
 
-    CHECK_CUSPARSE(cusparseCreateCsr(
-        &G2,
-        graph2_normalized.rows, graph2_normalized.cols, graph2_normalized.nnz,
-        graph2_normalized.d_row_offsets,
-        graph2_normalized.d_col_ind,
-        graph2_normalized.d_vals,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUDA_R_64F));
-
-    // Column-major view of the current iterate.
+    // Row-major n2 x n1 view over out_cross_dist_old storage, equivalent to out_cross_dist_old^T.
     CHECK_CUSPARSE(cusparseCreateDnMat(
-        &PREV_n1xn2, n1, n2, n1, d_prev, CUDA_R_64F, CUSPARSE_ORDER_COL));
-    // Column-major intermediate.
+        &out_cross_dist_old_t_n2xn1, n2, n1, n1, d_out_cross_dist_old, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
+    // Row-major n2 x n1 view over the same temp storage, equivalent to temp^T.
     CHECK_CUSPARSE(cusparseCreateDnMat(
-        &TEMP_n1xn2, n1, n2, n1, d_temp, CUDA_R_64F, CUSPARSE_ORDER_COL));
-    // Row-major n2 x n1 view over the same TEMP storage, equivalent to TEMP^T.
+        &temp_t_n2xn1, n2, n1, n1, d_temp, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
+    // Column-major view of temp, matching the second MKL SpMM in the CPU path.
     CHECK_CUSPARSE(cusparseCreateDnMat(
-        &TEMP_t_n2xn1, n2, n1, n1, d_temp, CUDA_R_64F, CUSPARSE_ORDER_ROW));
-    // Row-major n2 x n1 view over NEXT storage, equivalent to NEXT^T while NEXT itself
-    // is kept in n1 x n2 column-major layout for the rest of the pipeline.
+        &temp_n1xn2, n1, n2, n1, d_temp, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_COL));
+    // Column-major view of out_cross_dist.
     CHECK_CUSPARSE(cusparseCreateDnMat(
-        &NEXT_t_n2xn1, n2, n1, n1, d_next, CUDA_R_64F, CUSPARSE_ORDER_ROW));
+        &out_cross_dist_n1xn2, n1, n2, n1, d_out_cross_dist, PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_COL));
+    setup_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
-    void* dBuffer1 = nullptr;
-    void* dBuffer2 = nullptr;
-    size_t bufferSize1 = 0, bufferSize2 = 0;
+    void* d_spmm1_buffer = nullptr;
+    void* d_spmm2_buffer = nullptr;
+    size_t spmm1_buffer_size = 0, spmm2_buffer_size = 0;
 
+    section_start = cross_timing_now(timing_enabled);
     {
-        double alpha = 1.0;
-        double beta  = 0.0;
+        element_type alpha = static_cast<element_type>(1.0);
+        element_type beta  = static_cast<element_type>(0.0);
 
         CHECK_CUSPARSE(cusparseSpMM_bufferSize(
             sp_handle,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G1,
-            PREV_n1xn2,
+            G2.descr,
+            out_cross_dist_old_t_n2xn1,
             &beta,
-            TEMP_n1xn2,
-            CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
-            &bufferSize1));
+            temp_t_n2xn1,
+            PARROT_CUDA_R_TYPE,
+            spmm_alg.value,
+            &spmm1_buffer_size));
 
-        CHECK_CUDA(cudaMalloc(&dBuffer1, bufferSize1));
+        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_spmm1_buffer, spmm1_buffer_size));
 
         CHECK_CUSPARSE(cusparseSpMM_preprocess(
             sp_handle,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G1,
-            PREV_n1xn2,
+            G2.descr,
+            out_cross_dist_old_t_n2xn1,
             &beta,
-            TEMP_n1xn2,
-            CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
-            dBuffer1));
+            temp_t_n2xn1,
+            PARROT_CUDA_R_TYPE,
+            spmm_alg.value,
+            d_spmm1_buffer));
     }
 
     {
-        double alpha = (1.0 - rwr_restart_prob) * gamma;
-        double beta  = (1.0 + rwr_restart_prob);
+        element_type alpha = (static_cast<element_type>(1.0) - rwr_restart_prob) * gamma;
+        element_type beta  = static_cast<element_type>(0.0);
 
         CHECK_CUSPARSE(cusparseSpMM_bufferSize(
             sp_handle,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G2,
-            TEMP_t_n2xn1,
+            G1.descr,
+            temp_n1xn2,
             &beta,
-            NEXT_t_n2xn1,
-            CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
-            &bufferSize2));
+            out_cross_dist_n1xn2,
+            PARROT_CUDA_R_TYPE,
+            spmm_alg.value,
+            &spmm2_buffer_size));
 
-        CHECK_CUDA(cudaMalloc(&dBuffer2, bufferSize2));
+        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_spmm2_buffer, spmm2_buffer_size));
 
         CHECK_CUSPARSE(cusparseSpMM_preprocess(
             sp_handle,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &alpha,
-            G2,
-            TEMP_t_n2xn1,
+            G1.descr,
+            temp_n1xn2,
             &beta,
-            NEXT_t_n2xn1,
-            CUDA_R_64F,
-            CUSPARSE_SPMM_ALG_DEFAULT,
-            dBuffer2));
+            out_cross_dist_n1xn2,
+            PARROT_CUDA_R_TYPE,
+            spmm_alg.value,
+            d_spmm2_buffer));
     }
+    preprocess_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
-    double* d_final = d_prev;
+    element_type* d_out_cross_dist_final = d_out_cross_dist_old;
     for (int i = 0; i < max_iters; ++i) {
-        CHECK_CUDA(cudaMemcpy(d_next, d_in_cross_dist, N * sizeof(double), cudaMemcpyDeviceToDevice));
-
+        section_start = cross_timing_now(timing_enabled);
         {
-            double alpha = 1.0;
-            double beta  = 0.0;
+            element_type alpha = static_cast<element_type>(1.0);
+            element_type beta  = static_cast<element_type>(0.0);
 
             CHECK_CUSPARSE(cusparseSpMM(
                 sp_handle,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 &alpha,
-                G1,
-                PREV_n1xn2,
+                G2.descr,
+                out_cross_dist_old_t_n2xn1,
                 &beta,
-                TEMP_n1xn2,
-                CUDA_R_64F,
-                CUSPARSE_SPMM_ALG_DEFAULT,
-                dBuffer1));
+                temp_t_n2xn1,
+                PARROT_CUDA_R_TYPE,
+                spmm_alg.value,
+                d_spmm1_buffer));
         }
+        loop_spmm1_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
+        section_start = cross_timing_now(timing_enabled);
         {
-            double alpha = (1.0 - rwr_restart_prob) * gamma;
-            double beta  = (1.0 + rwr_restart_prob);
+            element_type alpha = (static_cast<element_type>(1.0) - rwr_restart_prob) * gamma;
+            element_type beta  = static_cast<element_type>(0.0);
 
             CHECK_CUSPARSE(cusparseSpMM(
                 sp_handle,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 CUSPARSE_OPERATION_NON_TRANSPOSE,
                 &alpha,
-                G2,
-                TEMP_t_n2xn1,
+                G1.descr,
+                temp_n1xn2,
                 &beta,
-                NEXT_t_n2xn1,
-                CUDA_R_64F,
-                CUSPARSE_SPMM_ALG_DEFAULT,
-                dBuffer2));
+                out_cross_dist_n1xn2,
+                PARROT_CUDA_R_TYPE,
+                spmm_alg.value,
+                d_spmm2_buffer));
         }
+        loop_spmm2_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
-        abs_diff_block_max_kernel<<<diff_blocks, 256>>>(d_next, d_prev, N, d_block_max);
+        section_start = cross_timing_now(timing_enabled);
+        const element_type restart_scale = static_cast<element_type>(1.0) + rwr_restart_prob;
+        CHECK_CUBLAS(parrot_cublas_axpy(blas_handle, static_cast<int>(N), &restart_scale, d_in_cross_dist, 1, d_out_cross_dist, 1));
+        loop_restart_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
+
+        section_start = cross_timing_now(timing_enabled);
+        abs_diff_block_max_kernel<<<diff_blocks, 256>>>(d_out_cross_dist, d_out_cross_dist_old, N, d_block_max);
         CHECK_CUDA(cudaGetLastError());
-        double max_diff = 0.0;
+        element_type max_diff = static_cast<element_type>(0.0);
         int max_idx = 0;
-        CHECK_CUBLAS(cublasIdamax(blas_handle, static_cast<int>(diff_blocks), d_block_max, 1, &max_idx));
+        CHECK_CUBLAS(parrot_cublas_iamax(blas_handle, static_cast<int>(diff_blocks), d_block_max, 1, &max_idx));
         if (max_idx > 0) {
-            CHECK_CUDA(cudaMemcpy(&max_diff, d_block_max + (max_idx - 1), sizeof(double), cudaMemcpyDeviceToHost));
+            CHECK_CUDA(cudaMemcpy(&max_diff, d_block_max + (max_idx - 1), sizeof(element_type), cudaMemcpyDeviceToHost));
         }
-        d_final = d_next;
+        loop_diff_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
+        d_out_cross_dist_final = d_out_cross_dist;
+        ++iterations_run;
         if (max_diff < tol) {
             break;
         }
 
-        std::swap(d_prev, d_next);
-        CHECK_CUSPARSE(cusparseDnMatSetValues(PREV_n1xn2, d_prev));
-        CHECK_CUSPARSE(cusparseDnMatSetValues(NEXT_t_n2xn1, d_next));
-        d_final = d_prev;
+        section_start = cross_timing_now(timing_enabled);
+        std::swap(d_out_cross_dist_old, d_out_cross_dist);
+        CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_old_t_n2xn1, d_out_cross_dist_old));
+        CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_n1xn2, d_out_cross_dist));
+        d_out_cross_dist_final = d_out_cross_dist_old;
+        loop_swap_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
     }
-    const double scale = 1.0 - gamma;
-    CHECK_CUBLAS(cublasDscal(blas_handle, static_cast<int>(N), &scale, d_final, 1));
-    if (d_final != d_out_cross_dist) {
-        CHECK_CUDA(cudaMemcpy(d_out_cross_dist, d_final, N * sizeof(double), cudaMemcpyDeviceToDevice));
+    section_start = cross_timing_now(timing_enabled);
+    const element_type scale = static_cast<element_type>(1.0) - gamma;
+    CHECK_CUBLAS(parrot_cublas_scal(blas_handle, static_cast<int>(N), &scale, d_out_cross_dist_final, 1));
+    if (d_out_cross_dist_final != d_out_cross_dist_result) {
+        CHECK_CUDA(cudaMemcpy(d_out_cross_dist_result, d_out_cross_dist_final, N * sizeof(element_type), cudaMemcpyDeviceToDevice));
     }
+    final_copy_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
-    CHECK_CUDA(cudaFree(dBuffer1));
-    CHECK_CUDA(cudaFree(dBuffer2));
+    section_start = cross_timing_now(timing_enabled);
+    CHECK_CUDA(PARROT_CUDA_FREE(d_spmm1_buffer));
+    CHECK_CUDA(PARROT_CUDA_FREE(d_spmm2_buffer));
 
-    CHECK_CUSPARSE(cusparseDestroyDnMat(NEXT_t_n2xn1));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(TEMP_t_n2xn1));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(TEMP_n1xn2));
-    CHECK_CUSPARSE(cusparseDestroyDnMat(PREV_n1xn2));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(out_cross_dist_n1xn2));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(temp_n1xn2));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(temp_t_n2xn1));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(out_cross_dist_old_t_n2xn1));
 
-    CHECK_CUSPARSE(cusparseDestroySpMat(G2));
-    CHECK_CUSPARSE(cusparseDestroySpMat(G1));
+    destroy_spmm_matrix_view(G2);
+    destroy_spmm_matrix_view(G1);
 
     CHECK_CUSPARSE(cusparseDestroy(sp_handle));
     CHECK_CUBLAS(cublasDestroy(blas_handle));
 
-    CHECK_CUDA(cudaFree(d_temp));
-    CHECK_CUDA(cudaFree(d_next));
-    CHECK_CUDA(cudaFree(d_block_max));
+    CHECK_CUDA(PARROT_CUDA_FREE(d_temp));
+    CHECK_CUDA(PARROT_CUDA_FREE(d_out_cross_dist_work));
+    CHECK_CUDA(PARROT_CUDA_FREE(d_block_max));
+    cleanup_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
+
+    if (timing_enabled) {
+        const long long total_ms = cross_timing_elapsed_ms(timing_enabled, total_start);
+        std::cout << "cross propagation breakdown (mixed_col_major):\n"
+                  << "  allocation/init: " << allocation_ms << " ms\n"
+                  << "  descriptor setup: " << setup_ms << " ms\n"
+                  << "  spmm preprocess: " << preprocess_ms << " ms"
+                  << " [spmm1 bytes=" << spmm1_buffer_size
+                  << ", spmm2 bytes=" << spmm2_buffer_size << "]\n"
+                  << "  loop total: "
+                  << (loop_spmm1_ms + loop_spmm2_ms + loop_restart_ms + loop_diff_ms + loop_swap_ms)
+                  << " ms\n"
+                  << "    graph2 spmm: " << loop_spmm1_ms << " ms\n"
+                  << "    graph1 spmm: " << loop_spmm2_ms << " ms\n"
+                  << "    restart axpy: " << loop_restart_ms << " ms\n"
+                  << "    convergence diff: " << loop_diff_ms << " ms\n"
+                  << "    swap/rebind: " << loop_swap_ms << " ms\n"
+                  << "    iterations executed: " << iterations_run << " / " << max_iters << "\n"
+                  << "  final scale/copy: " << final_copy_ms << " ms\n"
+                  << "  cleanup: " << cleanup_ms << " ms\n"
+                  << "  total inside cross propagation: " << total_ms << " ms"
+                  << std::endl;
+    }
 }
