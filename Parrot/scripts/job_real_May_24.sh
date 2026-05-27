@@ -2,7 +2,7 @@
 #SBATCH --job-name=job_real_May_24
 #SBATCH --output=output/job_real_ay_24.out
 #SBATCH --error=error/job_real_May_24.err
-#SBATCH --time=00:10:00
+#SBATCH --time=00:15:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48

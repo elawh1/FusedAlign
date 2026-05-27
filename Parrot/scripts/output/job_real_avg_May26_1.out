@@ -1,0 +1,68 @@
+------ STARTING RUNS FOR GGI ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/parrot-data/GGI
+graph1 #nodes 10403 -- graph2 #nodes 10403 -- directed 1 -- avg nnz1/n1 25 -- avg nnz2/n2  19 -- use node attributes 0 --- # of anchor links(l) 2080
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 15397 ms
+phase timings 
+  row normalizing graphs: 3 ms
+  graph1 RWR: 3678 ms
+  graph2 RWR: 3352 ms
+  cross RWR distance: 290 ms
+  graph1 intra distance: 55 ms
+  graph2 intra distance: 51 ms
+  cross distance propagation: 1708 ms
+  optimization: 6260 ms
+Total time of algorithm including overheads : 15637 ms
+
+hit@ 50 : 0.960651
+hit@ 30 : 0.958489
+hit@ 10 : 0.950138
+hit@ 1 : 0.853538
+mrr : 0.889321
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR GGI ------
+------ STARTING RUNS FOR acm-dbpl ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11

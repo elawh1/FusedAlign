@@ -41,6 +41,7 @@ int main(int argc, char* argv[]){
     }
     auto setup_start = std::chrono::high_resolution_clock::now();
     load_config(data_path, g1_num_nodes, g2_num_nodes, use_attr, directed, inner_iters, outer_iters);
+    std::cout << "----- Start -----" << std::endl;
     printf("MKL threads: %d\n", mkl_get_max_threads());
     printf("MKL dynamic: %d\n", mkl_get_dynamic());
     printf("OMP threads: %d\n", omp_get_max_threads());
@@ -78,6 +79,7 @@ int main(int argc, char* argv[]){
     auto setup_end = std::chrono::high_resolution_clock::now();
     // phase_timings.push_back({"input loading", std::chrono::duration_cast<milliseconds>(setup_end - setup_start).count()});
     int l = anchor_pairs.first.size();
+    std::cout << "Dataset path " << data_path << std::endl;
     printf("graph1 #nodes %d -- graph2 #nodes %d -- directed %d -- avg nnz1/n1 %d -- avg nnz2/n2  %d -- use node attributes %d --- # of anchor links(l) %ld\n\n",
         g1_num_nodes, g2_num_nodes, directed, avg_nnz1_per_n1, avg_nnz2_per_n2, use_attr, anchor_pairs.first.size());
 
@@ -167,13 +169,16 @@ int main(int argc, char* argv[]){
     for (const auto& phase : phase_timings) {
         total_algorithm_ms += phase.second;
     }
-    std::cout << "total phases of algorithm completed in " << total_algorithm_ms  << " ms" << std::endl;
-    std::cout << "phase timings:" << std::endl;
+    std::cout << "total phases of algorithm completed in : " << total_algorithm_ms  << " ms" << std::endl;
+    std::cout << "phase timings " << std::endl;
     for (const auto& phase : phase_timings) {
         std::cout << "  " << phase.first << ": " << phase.second << " ms" << std::endl;
     }
 
-    std::cout << "Total time of algorithm including overheads " << std::chrono::duration_cast<milliseconds>(time_12 - time_0).count() << " ms" << std::endl;
+    std::cout << "Total time of algorithm including overheads : " << std::chrono::duration_cast<milliseconds>(time_12 - time_0).count() << " ms" << std::endl << std::endl;
+
+    unsigned int numThreads = mkl_get_max_threads();
+    omp_set_num_threads(numThreads);      
     std::unordered_map<int, double>  hits = hits_ks_mean_scores<Real>( S, g1_num_nodes, g2_num_nodes, anchor_pairs_test, std::vector<int>{1, 10, 30, 50});
 
     for (const auto& pair : hits) {
@@ -182,6 +187,8 @@ int main(int argc, char* argv[]){
 
     double mrr = mrr_mean_score_cpp<Real>( S, g1_num_nodes, g2_num_nodes, anchor_pairs_test);
     std::cout << "mrr : " << mrr << std::endl;
+
+    std::cout << "----- End -----" << std::endl;
 
     return 0;
 }

@@ -1,0 +1,184 @@
+------ STARTING RUNS FOR g5k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g5k
+graph1 #nodes 5000 -- graph2 #nodes 5000 -- directed 0 -- avg nnz1/n1 19 -- avg nnz2/n2  19 -- use node attributes 0 --- # of anchor links(l) 500
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 3255 ms
+phase timings 
+  row normalizing graphs: 3 ms
+  graph1 RWR: 917 ms
+  graph2 RWR: 768 ms
+  cross RWR distance: 13 ms
+  graph1 intra distance: 5 ms
+  graph2 intra distance: 4 ms
+  cross distance propagation: 329 ms
+  optimization: 1216 ms
+Total time of algorithm including overheads : 3317 ms
+
+hit@ 50 : 0.01325
+hit@ 30 : 0.00875
+hit@ 10 : 0.00325
+hit@ 1 : 0.00025
+mrr : 0.00223249
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR g5k ------
+------ STARTING RUNS FOR g10k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g10k
+graph1 #nodes 10000 -- graph2 #nodes 10000 -- directed 1 -- avg nnz1/n1 10 -- avg nnz2/n2  9 -- use node attributes 0 --- # of anchor links(l) 1000
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 7651 ms
+phase timings 
+  row normalizing graphs: 4 ms
+  graph1 RWR: 1111 ms
+  graph2 RWR: 661 ms
+  cross RWR distance: 58 ms
+  graph1 intra distance: 9 ms
+  graph2 intra distance: 8 ms
+  cross distance propagation: 1186 ms
+  optimization: 4614 ms
+Total time of algorithm including overheads : 7844 ms
+
+hit@ 50 : 0.00475
+hit@ 30 : 0.00275
+hit@ 10 : 0.00075
+hit@ 1 : 0
+mrr : 0.000841119
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR g10k ------
+------ STARTING RUNS FOR g15k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g15k
+graph1 #nodes 15000 -- graph2 #nodes 15000 -- directed 1 -- avg nnz1/n1 10 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 1500
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 21754 ms
+phase timings 
+  row normalizing graphs: 6 ms
+  graph1 RWR: 4752 ms
+  graph2 RWR: 4156 ms
+  cross RWR distance: 165 ms
+  graph1 intra distance: 46 ms
+  graph2 intra distance: 45 ms
+  cross distance propagation: 2771 ms
+  optimization: 9813 ms
+Total time of algorithm including overheads : 22193 ms
+
+hit@ 50 : 0.00216667
+hit@ 30 : 0.0015
+hit@ 10 : 0.0005
+hit@ 1 : 0.000166667
+mrr : 0.000677172
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR g15k ------
+------ STARTING RUNS FOR g20k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11

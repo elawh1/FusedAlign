@@ -1,0 +1,75 @@
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g55k
+graph1 #nodes 55000 -- graph2 #nodes 55000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 5500
+
+total phases of algorithm completed in 294234 ms
+phase timings:
+  row normalizing graphs: 104 ms
+  graph1 RWR: 53604 ms
+  graph2 RWR: 54823 ms
+  cross RWR distance: 6536 ms
+  graph1 intra distance: 1452 ms
+  graph2 intra distance: 1463 ms
+  cross distance propagation: 34654 ms
+  optimization: 141598 ms
+Total time of algorithm including overheads 299814 ms
+
+hit@ 50 : 0.00109091
+hit@ 30 : 0.000636364
+hit@ 10 : 0.000409091
+hit@ 1 : 0
+mrr : 0.000239165
+----- End -----
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g60k
+graph1 #nodes 60000 -- graph2 #nodes 60000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 6000
+
+total phases of algorithm completed in 356835 ms
+phase timings:
+  row normalizing graphs: 14 ms
+  graph1 RWR: 72711 ms
+  graph2 RWR: 74069 ms
+  cross RWR distance: 8139 ms
+  graph1 intra distance: 1821 ms
+  graph2 intra distance: 1880 ms
+  cross distance propagation: 43220 ms
+  optimization: 154981 ms
+Total time of algorithm including overheads 363482 ms
+
+hit@ 50 : 0.000666667
+hit@ 30 : 0.000458333
+hit@ 10 : 0.00025
+hit@ 1 : 0
+mrr : 0.000197511
+----- End -----
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g65k
+graph1 #nodes 65000 -- graph2 #nodes 65000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 6500
+
+total phases of algorithm completed in 430844 ms
+phase timings:
+  row normalizing graphs: 224 ms
+  graph1 RWR: 81953 ms
+  graph2 RWR: 84563 ms
+  cross RWR distance: 10259 ms
+  graph1 intra distance: 1934 ms
+  graph2 intra distance: 2034 ms
+  cross distance propagation: 52383 ms
+  optimization: 197494 ms
+Total time of algorithm including overheads 438820 ms
+
+hit@ 50 : 0.000615385
+hit@ 30 : 0.000307692
+hit@ 10 : 0.000115385
+hit@ 1 : 0
+mrr : 0.000159859
+----- End -----

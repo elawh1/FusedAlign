@@ -1,0 +1,25 @@
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g70k
+graph1 #nodes 70000 -- graph2 #nodes 70000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 7000
+
+total phases of algorithm completed in 469242 ms
+phase timings:
+  row normalizing graphs: 59 ms
+  graph1 RWR: 86478 ms
+  graph2 RWR: 88914 ms
+  cross RWR distance: 12649 ms
+  graph1 intra distance: 2519 ms
+  graph2 intra distance: 2587 ms
+  cross distance propagation: 58472 ms
+  optimization: 217564 ms
+Total time of algorithm including overheads 478295 ms
+
+hit@ 50 : 0.00075
+hit@ 30 : 0.000607143
+hit@ 10 : 0.000214286
+hit@ 1 : 3.57143e-05
+mrr : 0.00020194
+----- End -----
