@@ -1,0 +1,354 @@
+------ STARTING RUNS FOR GGI ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/parrot-data/GGI
+graph1 #nodes 10403 -- graph2 #nodes 10403 -- directed 1 -- avg nnz1/n1 25 -- avg nnz2/n2  19 -- use node attributes 0 --- # of anchor links(l) 2080
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 9802 ms
+phase timings 
+  row normalizing graphs: 2 ms
+  graph1 RWR: 1008 ms
+  graph2 RWR: 903 ms
+  cross RWR distance: 105 ms
+  graph1 intra distance: 49 ms
+  graph2 intra distance: 46 ms
+  cross distance propagation: 1616 ms
+  optimization: 6073 ms
+Total time of algorithm including overheads : 10030 ms
+
+hit@ 50 : 0.960291
+hit@ 30 : 0.958128
+hit@ 10 : 0.948877
+hit@ 1 : 0.851856
+mrr : 0.887928
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR GGI ------
+------ STARTING RUNS FOR acm-dbpl ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/parrot-data/acm-dbpl
+graph1 #nodes 9872 -- graph2 #nodes 9916 -- directed 1 -- avg nnz1/n1 16 -- avg nnz2/n2  18 -- use node attributes 1 --- # of anchor links(l) 1265
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 8602 ms
+phase timings 
+  row normalizing graphs: 1 ms
+  graph1 RWR: 576 ms
+  graph2 RWR: 552 ms
+  cross RWR distance: 181 ms
+  graph1 intra distance: 4 ms
+  graph2 intra distance: 1 ms
+  cross distance propagation: 1337 ms
+  optimization: 5950 ms
+Total time of algorithm including overheads : 8799 ms
+
+hit@ 50 : 0.977273
+hit@ 30 : 0.970158
+hit@ 10 : 0.942688
+hit@ 1 : 0.685573
+mrr : 0.774888
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR acm-dbpl ------
+------ STARTING RUNS FOR arxiv ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/parrot-data/arxiv
+graph1 #nodes 18772 -- graph2 #nodes 18772 -- directed 1 -- avg nnz1/n1 46 -- avg nnz2/n2  35 -- use node attributes 0 --- # of anchor links(l) 3754
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 34130 ms
+phase timings 
+  row normalizing graphs: 5 ms
+  graph1 RWR: 2764 ms
+  graph2 RWR: 2626 ms
+  cross RWR distance: 495 ms
+  graph1 intra distance: 290 ms
+  graph2 intra distance: 239 ms
+  cross distance propagation: 6082 ms
+  optimization: 21629 ms
+Total time of algorithm including overheads : 34902 ms
+
+hit@ 50 : 0.949361
+hit@ 30 : 0.944134
+hit@ 10 : 0.920962
+hit@ 1 : 0.735218
+mrr : 0.802751
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR arxiv ------
+------ STARTING RUNS FOR dbp15k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/parrot-data/dbp15k
+graph1 #nodes 19661 -- graph2 #nodes 19993 -- directed 1 -- avg nnz1/n1 17 -- avg nnz2/n2  18 -- use node attributes 0 --- # of anchor links(l) 3000
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 34562 ms
+phase timings 
+  row normalizing graphs: 3 ms
+  graph1 RWR: 2374 ms
+  graph2 RWR: 2318 ms
+  cross RWR distance: 521 ms
+  graph1 intra distance: 221 ms
+  graph2 intra distance: 233 ms
+  cross distance propagation: 5722 ms
+  optimization: 23170 ms
+Total time of algorithm including overheads : 35382 ms
+
+hit@ 50 : 0.955375
+hit@ 30 : 0.944042
+hit@ 10 : 0.904458
+hit@ 1 : 0.724375
+mrr : 0.787359
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR dbp15k ------
+------ STARTING RUNS FOR flicker-lastfm ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/parrot-data/flicker-lastfm
+graph1 #nodes 12974 -- graph2 #nodes 15436 -- directed 1 -- avg nnz1/n1 4 -- avg nnz2/n2  4 -- use node attributes 0 --- # of anchor links(l) 90
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 10805 ms
+phase timings 
+  row normalizing graphs: 0 ms
+  graph1 RWR: 91 ms
+  graph2 RWR: 81 ms
+  cross RWR distance: 68 ms
+  graph1 intra distance: 1 ms
+  graph2 intra distance: 1 ms
+  cross distance propagation: 2221 ms
+  optimization: 8342 ms
+Total time of algorithm including overheads : 11139 ms
+
+hit@ 50 : 0.125691
+hit@ 30 : 0.106354
+hit@ 10 : 0.0814917
+hit@ 1 : 0.0248619
+mrr : 0.0446157
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR flicker-lastfm ------
+------ STARTING RUNS FOR twitter-foursquare ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/parrot-data/twitter-foursquare
+graph1 #nodes 5311 -- graph2 #nodes 5313 -- directed 0 -- avg nnz1/n1 196 -- avg nnz2/n2  81 -- use node attributes 0 --- # of anchor links(l) 642
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 3638 ms
+phase timings 
+  row normalizing graphs: 15 ms
+  graph1 RWR: 249 ms
+  graph2 RWR: 218 ms
+  cross RWR distance: 12 ms
+  graph1 intra distance: 12 ms
+  graph2 intra distance: 5 ms
+  cross distance propagation: 1045 ms
+  optimization: 2082 ms
+Total time of algorithm including overheads : 3699 ms
+
+hit@ 50 : 0.177407
+hit@ 30 : 0.159744
+hit@ 10 : 0.117042
+hit@ 1 : 0.0493012
+mrr : 0.0736298
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR twitter-foursquare ------

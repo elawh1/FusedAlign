@@ -561,13 +561,16 @@ void get_batch_rwr_scores_rowmjr(sparse_matrix_t graph_norm_csr, std::vector<MKL
         auto time_1_3 = std::chrono::high_resolution_clock::now();
         swap_after_spmm_time += std::chrono::duration_cast<std::chrono::milliseconds>(time_1_3 - time_1_2).count();
     }
-    std::swap(X_vals, Xnext_vals);
-
-    mkl_imatcopy_real<Real>('R', 'T', n, l, Real(1), Xnext_vals.data(), l, n);
+    
+    // std::swap(X_vals, Xnext_vals);
+    auto time_2_0 = std::chrono::high_resolution_clock::now();
+    // mkl_imatcopy_real<Real>('R', 'T', n, l, Real(1), Xnext_vals.data(), l, n);
+    mkl_omatcopy_real<Real>('R', 'T', n, l, Real(1), X_vals.data(), l, Xnext_vals.data(), n); 
 
     auto time_2 = std::chrono::high_resolution_clock::now();
     DEBUG_ONLY(std::cout << "in get_batch_rwr_scores_rowmjr generate E " << std::chrono::duration_cast<std::chrono::milliseconds>(time_1-time_0).count() <<
-        " for loop " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " for loop + copy " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_1).count() <<
+        " mkl_omatcopy_real time " << std::chrono::duration_cast<std::chrono::milliseconds>(time_2-time_2_0).count() <<
         " spmm time " << spmm_time << " add after spmm time " << add_after_spmm_time <<
         " swap after spmm time " << swap_after_spmm_time << std::endl);
 }

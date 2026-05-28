@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=job_ER_avg_May26_2
-#SBATCH --output=output/job_ER_avg_May26_2.out
-#SBATCH --error=error/job_ER_avg_May26_2.err
-#SBATCH --time=01:00:00
+#SBATCH --job-name=job_ER_avg_May27_2
+#SBATCH --output=output/job_ER_avg_May27_2.out
+#SBATCH --error=error/job_ER_avg_May27_2.err
+#SBATCH --time=01:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
@@ -12,7 +12,7 @@ export MKL_NUM_THREADS=48 OMP_NUM_THREADS=48 MKL_DYNAMIC=FALSE
 
 DATA_PATH="<REDACTED>/graph_generator_parrot"
 
-for DATA in "g55k" "g60k" "g65k" "g70k" "g75k" ; do
+for DATA in "g45k" "g50k" "g55k" ; do
 	cmd="./../parrot $DATA_PATH/$DATA 0"   # replace with your command
 	runs=11
 	tmpdir=$(mktemp -d)

@@ -1,0 +1,126 @@
+------ STARTING RUNS FOR g40k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g40k
+graph1 #nodes 40000 -- graph2 #nodes 40000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 4000
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 95771 ms
+phase timings 
+  row normalizing graphs: 10 ms
+  graph1 RWR: 4729 ms
+  graph2 RWR: 5205 ms
+  cross RWR distance: 2557 ms
+  graph1 intra distance: 550 ms
+  graph2 intra distance: 677 ms
+  cross distance propagation: 17023 ms
+  optimization: 65020 ms
+Total time of algorithm including overheads : 98690 ms
+
+hit@ 50 : 0.001
+hit@ 30 : 0.0005625
+hit@ 10 : 0.0001875
+hit@ 1 : 0
+mrr : 0.000239695
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR g40k ------
+------ STARTING RUNS FOR g45k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path <REDACTED>/graph_generator_parrot/g45k
+graph1 #nodes 45000 -- graph2 #nodes 45000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 4500
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 134254 ms
+phase timings 
+  row normalizing graphs: 11 ms
+  graph1 RWR: 5697 ms
+  graph2 RWR: 6548 ms
+  cross RWR distance: 3717 ms
+  graph1 intra distance: 706 ms
+  graph2 intra distance: 740 ms
+  cross distance propagation: 23996 ms
+  optimization: 92839 ms
+Total time of algorithm including overheads : 137989 ms
+
+hit@ 50 : 0.00116667
+hit@ 30 : 0.000666667
+hit@ 10 : 0.000222222
+hit@ 1 : 0
+mrr : 0.000227479
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR g45k ------
+------ STARTING RUNS FOR g50k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11

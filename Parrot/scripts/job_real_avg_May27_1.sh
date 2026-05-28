@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=job_real_avg_May26_1
-#SBATCH --output=output/job_real_avg_May26_1.out
-#SBATCH --error=error/job_real_avg_May26_1.err
-#SBATCH --time=00:10:00
+#SBATCH --job-name=job_real_avg_May27_1
+#SBATCH --output=output/job_real_avg_May27_1.out
+#SBATCH --error=error/job_real_avg_May27_1.err
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
