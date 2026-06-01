@@ -21,22 +21,13 @@ CUDA_SRC = src/main.cu src/randomwalk.cu src/sddmm.cu \
            src/memory_tracker.cu
 CUDA_OBJS = $(CUDA_SRC:.cu=.o)
 CUDA_HDR = include/cuda_helper.cuh
-BENCH_TARGET = spmm_ell_bench
-ARXIV_SPMM_BENCH_TARGET = arxiv_spmm_format_bench
 
 NVLIBS = -L/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/math_libs/12.9/targets/x86_64-linux/lib \
          -lcusparse -lcublas
 
-BENCH_FLAGS = -O3 -std=c++17 \
-    -I/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/include
-
-.PHONY: all bench arxiv-spmm-bench clean clean-bench distclean
+.PHONY: all clean distclean
 
 all: $(CUDA_TARGET)
-
-bench: $(BENCH_TARGET)
-
-arxiv-spmm-bench: $(ARXIV_SPMM_BENCH_TARGET)
 
 $(CUDA_TARGET): $(CUDA_OBJS)
 	$(NVCC) $(NVCCFLAGS) $(CUDA_OBJS) -o $(CUDA_TARGET) $(NVLIBS)
@@ -44,16 +35,7 @@ $(CUDA_TARGET): $(CUDA_OBJS)
 %.o: %.cu $(CUDA_HDR)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
-$(BENCH_TARGET): src/spmm_ell_benchmark.cu
-	$(NVCC) $(BENCH_FLAGS) src/spmm_ell_benchmark.cu -o $@ $(NVLIBS)
-
-$(ARXIV_SPMM_BENCH_TARGET): src/arxiv_spmm_format_benchmark.cu src/helper.cu src/helper2.cu src/memory_tracker.cu $(CUDA_HDR)
-	$(NVCC) $(NVCCFLAGS) src/arxiv_spmm_format_benchmark.cu src/helper.cu src/helper2.cu src/memory_tracker.cu -o $@ $(NVLIBS)
-
 clean:
 	rm -f $(CUDA_TARGET) $(CUDA_OBJS)
 
-clean-bench:
-	rm -f $(BENCH_TARGET) $(ARXIV_SPMM_BENCH_TARGET)
-
-distclean: clean clean-bench
+distclean: clean

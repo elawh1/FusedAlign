@@ -308,8 +308,8 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const auto spmat_setup_end = Clock::now();
 #endif
     
-    const element_type alpha = static_cast<element_type>(1.0 - restart_prob);
-    const element_type beta = static_cast<element_type>(1.0);
+    const element_type alpha = static_cast<element_type>(1.0);
+    const element_type beta = static_cast<element_type>(0.0);
 
     size_t bufferSize = 0;
 #ifdef DEBUG
