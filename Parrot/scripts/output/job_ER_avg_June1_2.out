@@ -1,0 +1,65 @@
+------ STARTING RUNS FOR g45k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets/g45k
+graph1 #nodes 45000 -- graph2 #nodes 45000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 4500
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 251970 ms
+phase timings 
+  row normalizing graphs: 11 ms
+  graph1 RWR: 8913 ms
+  graph2 RWR: 31607 ms
+  cross RWR distance: 13247 ms
+  graph1 intra distance: 1741 ms
+  graph2 intra distance: 6993 ms
+  cross distance propagation: 65321 ms
+  optimization: 124137 ms
+Total time of algorithm including overheads : 253651 ms
+
+hit@ 50 : 0.00116667
+hit@ 30 : 0.000666667
+hit@ 10 : 0.000222222
+hit@ 1 : 0
+mrr : 0.000227479
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR g45k ------
+------ STARTING RUNS FOR g50k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
