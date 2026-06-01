@@ -1,18 +1,20 @@
-#!/usr/bin/env bash
-#SBATCH --job-name=job_ER_avg_May27_4
-#SBATCH --output=output/job_ER_avg_May27_4.out
-#SBATCH --error=error/job_ER_avg_May27_4.err
-#SBATCH --time=02:00:00
+#!/bin/bash
+#SBATCH --qos=regular
+#SBATCH --constraint=cpu
+#SBATCH --job-name=job_ER_avg_June1_2
+#SBATCH --output=output/job_ER_avg_June1_2.out
+#SBATCH --error=error/job_ER_avg_June1_2.err
+#SBATCH --time=01:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
-#SBATCH --mem=350G
+
 
 export MKL_NUM_THREADS=48 OMP_NUM_THREADS=48 MKL_DYNAMIC=FALSE
 
-DATA_PATH="<REDACTED>/graph_generator_parrot"
+DATA_PATH="/global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets"
 
-for DATA in "g75k" "g80k" "g85k" ; do
+for DATA in "g45k" "g50k" "g55k" ; do
 	cmd="./../parrot $DATA_PATH/$DATA 0"   # replace with your command
 	runs=11
 	tmpdir=$(mktemp -d)

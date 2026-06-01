@@ -1,18 +1,20 @@
-#!/usr/bin/env bash
-#SBATCH --job-name=job_ER_avg_May27_1
-#SBATCH --output=output/job_ER_avg_May27_1.out
-#SBATCH --error=error/job_ER_avg_May27_1.err
-#SBATCH --time=01:15:00
+#!/bin/bash
+#SBATCH --qos=regular
+#SBATCH --constraint=cpu
+#SBATCH --job-name=job_real_avg_June1_1
+#SBATCH --output=output/job_real_avg_June1_1.out
+#SBATCH --error=error/job_real_avg_June1_1.err
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
-#SBATCH --mem=350G
+
 
 export MKL_NUM_THREADS=48 OMP_NUM_THREADS=48 MKL_DYNAMIC=FALSE
 
-DATA_PATH="<REDACTED>/graph_generator_parrot"
+DATA_PATH="~/cdir-m4293/durga/parrot-data1"
 
-for DATA in "g5k" "g10k" "g15k" "g20k" "g25k" "g30k" "g35k" "g40k" ; do
+for DATA in "GGI" "acm-dbpl" "arxiv" "dbp15k" "flicker-lastfm" "twitter-foursquare" ; do
 	cmd="./../parrot $DATA_PATH/$DATA 0"   # replace with your command
 	runs=11
 	tmpdir=$(mktemp -d)
