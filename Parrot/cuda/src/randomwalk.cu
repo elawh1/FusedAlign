@@ -72,8 +72,88 @@ __global__ void add_restart_entries_kernel(element_type* x,
     x[offset] += restart_prob;
 }
 
+__global__ void csr_spmm_jik_v1_row_major_kernel(const int* __restrict__ row_offsets,
+                                                 const int* __restrict__ col_ind,
+                                                 const element_type* __restrict__ vals,
+                                                 int rows,
+                                                 int dense_cols,
+                                                 int panel_width,
+                                                 element_type alpha,
+                                                 const element_type* __restrict__ B,
+                                                 element_type beta,
+                                                 element_type* __restrict__ C) {
+    const int row = static_cast<int>(blockIdx.x);
+    const int j_start = static_cast<int>(blockIdx.y) * panel_width;
+    const int panel_col = static_cast<int>(threadIdx.x);
+    const int col = j_start + panel_col;
+    if (row >= rows || panel_col >= panel_width || col >= dense_cols) {
+        return;
+    }
+
+    const size_t out_idx = static_cast<size_t>(row) * dense_cols + col;
+    element_type out_val = static_cast<element_type>(0.0);
+    if (beta != static_cast<element_type>(0.0)) {
+        out_val = (beta == static_cast<element_type>(1.0)) ? C[out_idx] : beta * C[out_idx];
+    }
+
+    if (alpha == static_cast<element_type>(0.0)) {
+        C[out_idx] = out_val;
+        return;
+    }
+
+    const int row_start = row_offsets[row];
+    const int row_end = row_offsets[row + 1];
+    for (int p = row_start; p < row_end; ++p) {
+        const int k = col_ind[p];
+        out_val += alpha * vals[p] * B[static_cast<size_t>(k) * dense_cols + col];
+    }
+
+    C[out_idx] = out_val;
+}
+
 constexpr int kRwrTransposeTileDim = 32;
 constexpr int kRwrTransposeBlockRows = 8;
+constexpr int kCustomSpmmJikPanelWidth = 64;
+
+bool env_flag_enabled(const char* env_name) {
+    const char* env_value = std::getenv(env_name);
+    if (env_value == nullptr || env_value[0] == '\0') {
+        return false;
+    }
+
+    const std::string value(env_value);
+    return value == "1" || value == "true" || value == "TRUE" ||
+           value == "on" || value == "ON" || value == "yes" ||
+           value == "YES" || value == "custom" || value == "CUSTOM";
+}
+
+void custom_csr_spmm_jik_v1_row_major(const CudaCsrMatrix& graph,
+                                      int dense_cols,
+                                      element_type alpha,
+                                      const element_type* d_B,
+                                      element_type beta,
+                                      element_type* d_C) {
+    if (graph.rows == 0 || dense_cols == 0) {
+        return;
+    }
+
+    const dim3 block(kCustomSpmmJikPanelWidth);
+    const dim3 grid(
+        static_cast<unsigned int>(graph.rows),
+        static_cast<unsigned int>((dense_cols + kCustomSpmmJikPanelWidth - 1) / kCustomSpmmJikPanelWidth));
+    csr_spmm_jik_v1_row_major_kernel<<<grid, block>>>(
+        graph.d_row_offsets,
+        graph.d_col_ind,
+        graph.d_vals,
+        graph.rows,
+        dense_cols,
+        kCustomSpmmJikPanelWidth,
+        alpha,
+        d_B,
+        beta,
+        d_C);
+    CHECK_CUDA(cudaGetLastError());
+}
 
 // Tiled shared-memory transpose: coalesced reads and coalesced writes.
 // Converts row-major (rows x cols) → col-major (rows x cols).
@@ -245,7 +325,10 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const size_t dense_elems = static_cast<size_t>(n) * static_cast<size_t>(l);
     const int total_updates = std::max(0, max_iters - 1);
     const unsigned int anchor_blocks = static_cast<unsigned int>((static_cast<unsigned int>(l) + 255U) / 256U);
-    const CudaSpmmAlgorithm spmm_alg = select_cuda_spmm_algorithm("CUDA_RWR_SPMM_ALG");
+    const bool use_custom_spmm = env_flag_enabled("CUDA_RWR_USE_CUSTOM_SPMM");
+    const CudaSpmmAlgorithm spmm_alg = use_custom_spmm
+        ? CudaSpmmAlgorithm{CUSPARSE_SPMM_ALG_DEFAULT, "custom_omp_spmm_jik_v1"}
+        : select_cuda_spmm_algorithm("CUDA_RWR_SPMM_ALG");
 
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
@@ -268,10 +351,15 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const bool reused_anchor_capacity = context.anchor_capacity >= static_cast<size_t>(l);
     const auto context_setup_start = Clock::now();
 #endif
-    ensure_batch_rwr_handles(context);
-    ensure_batch_rwr_dense_capacity(context, dense_elems);
-    ensure_batch_rwr_dense_mats(context, n, l);
-    ensure_batch_rwr_anchor_capacity(context, static_cast<size_t>(l));
+    if (!use_custom_spmm) {
+        ensure_batch_rwr_handles(context);
+        ensure_batch_rwr_dense_capacity(context, dense_elems);
+        ensure_batch_rwr_dense_mats(context, n, l);
+        ensure_batch_rwr_anchor_capacity(context, static_cast<size_t>(l));
+    } else {
+        ensure_batch_rwr_dense_capacity(context, dense_elems);
+        ensure_batch_rwr_anchor_capacity(context, static_cast<size_t>(l));
+    }
 #ifdef DEBUG
     const auto context_setup_end = Clock::now();
 
@@ -297,13 +385,15 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
     const bool recreated_mat_a = context.mat_a != nullptr;
     const auto spmat_setup_start = Clock::now();
 #endif
-    if (context.mat_a != nullptr) {
-        CHECK_CUSPARSE(cusparseDestroySpMat(context.mat_a));
-        context.mat_a = nullptr;
-    }
+    if (!use_custom_spmm) {
+        if (context.mat_a != nullptr) {
+            CHECK_CUSPARSE(cusparseDestroySpMat(context.mat_a));
+            context.mat_a = nullptr;
+        }
 
-    CudaSpMatView mat_a_view = create_spmm_matrix_view(graph);
-    context.mat_a = mat_a_view.descr;
+        CudaSpMatView mat_a_view = create_spmm_matrix_view(graph);
+        context.mat_a = mat_a_view.descr;
+    }
 #ifdef DEBUG
     const auto spmat_setup_end = Clock::now();
 #endif
@@ -315,35 +405,39 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
 #ifdef DEBUG
     const auto preprocess_start = Clock::now();
 #endif
-    CHECK_CUSPARSE(cusparseSpMM_bufferSize(
-        context.cusparse,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        &alpha,
-        context.mat_a,
-        context.mat_x,
-        &beta,
-        context.mat_xnext,
-        CUDA_R_TYPE,
-        spmm_alg.value,
-        &bufferSize));
+    if (!use_custom_spmm) {
+        CHECK_CUSPARSE(cusparseSpMM_bufferSize(
+            context.cusparse,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &alpha,
+            context.mat_a,
+            context.mat_x,
+            &beta,
+            context.mat_xnext,
+            CUDA_R_TYPE,
+            spmm_alg.value,
+            &bufferSize));
+    }
 
 #ifdef DEBUG
     const bool reused_workspace = context.buffer_capacity >= bufferSize;
 #endif
     ensure_batch_rwr_workspace(context, bufferSize);
-    CHECK_CUSPARSE(cusparseSpMM_preprocess(
-        context.cusparse,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        &alpha,
-        context.mat_a,
-        context.mat_x,
-        &beta,
-        context.mat_xnext,
-        CUDA_R_TYPE,
-        spmm_alg.value,
-        context.d_buffer));
+    if (!use_custom_spmm) {
+        CHECK_CUSPARSE(cusparseSpMM_preprocess(
+            context.cusparse,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &alpha,
+            context.mat_a,
+            context.mat_x,
+            &beta,
+            context.mat_xnext,
+            CUDA_R_TYPE,
+            spmm_alg.value,
+            context.d_buffer));
+    }
 #ifdef DEBUG
     CHECK_CUDA(cudaDeviceSynchronize());
     const auto preprocess_end = Clock::now();
@@ -359,18 +453,22 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
 #ifdef DEBUG
         const auto spmm_start = Clock::now();
 #endif
-        CHECK_CUSPARSE(cusparseSpMM(
-            context.cusparse,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha,
-            context.mat_a,
-            context.mat_x,
-            &beta,
-            context.mat_xnext,
-            CUDA_R_TYPE,
-            spmm_alg.value,
-            context.d_buffer));
+        if (use_custom_spmm) {
+            custom_csr_spmm_jik_v1_row_major(graph, l, alpha, context.d_x, beta, context.d_xnext);
+        } else {
+            CHECK_CUSPARSE(cusparseSpMM(
+                context.cusparse,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                &alpha,
+                context.mat_a,
+                context.mat_x,
+                &beta,
+                context.mat_xnext,
+                CUDA_R_TYPE,
+                spmm_alg.value,
+                context.d_buffer));
+        }
 
 #ifdef DEBUG
         CHECK_CUDA(cudaDeviceSynchronize());
@@ -396,8 +494,10 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         const auto swap_start = add_end;
 #endif
         std::swap(context.d_x, context.d_xnext);
-        CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_x, context.d_x));
-        CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_xnext, context.d_xnext));
+        if (!use_custom_spmm) {
+            CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_x, context.d_x));
+            CHECK_CUSPARSE(cusparseDnMatSetValues(context.mat_xnext, context.d_xnext));
+        }
 #ifdef DEBUG
         const auto swap_end = Clock::now();
         iter_swap_time += elapsed_ms(swap_start, swap_end);
@@ -435,6 +535,7 @@ void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vecto
         << " [mat_a=" << (recreated_mat_a ? "recreated" : "created") << "]\n"
         << "  spmm preprocess: " << elapsed_ms(preprocess_start, preprocess_end) << " ms"
         << " [workspace=" << (reused_workspace ? "reused" : "resized") << ", bytes=" << bufferSize << "]\n"
+        << "  spmm backend: " << (use_custom_spmm ? "custom" : "cusparse") << "\n"
         << "  spmm alg: " << spmm_alg.name << "\n"
         << "  dense order: row_major\n"
         << "  iteration loop: " << elapsed_ms(iter_loop_start, iter_loop_end) << " ms\n"

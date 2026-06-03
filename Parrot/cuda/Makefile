@@ -15,7 +15,7 @@ ifeq ($(DEBUG),1)
 NVCCFLAGS += -DDEBUG
 endif
 
-CUDA_TARGET = cuda
+CUDA_TARGET = cuda_alignment
 CUDA_SRC = src/main.cu src/randomwalk.cu src/sddmm.cu \
            src/helper.cu src/helper2.cu src/optimization.cu src/accuracy.cu \
            src/memory_tracker.cu
