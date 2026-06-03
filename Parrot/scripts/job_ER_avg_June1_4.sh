@@ -13,24 +13,27 @@
 export MKL_NUM_THREADS=48 OMP_NUM_THREADS=48 MKL_DYNAMIC=FALSE
 
 DATA_PATH="/global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets"
+tmpdir="${PARROT_TMPDIR:-/global/homes/d/dmandara/network_alignment/Parrot-Imp/Parrot/scripts/tmp}"
+mkdir -p "$tmpdir"
+script_tag="${SLURM_JOB_NAME:-$(basename "$0" .sh)}_${SLURM_JOB_ID:-$$}"
 
 for DATA in "g75k" "g80k" "g85k" ; do
 	cmd="./../parrot $DATA_PATH/$DATA 0"   # replace with your command
 	runs=11
-	tmpdir=$(mktemp -d)
-	trap 'rm -rf "$tmpdir"' EXIT
+	run_prefix="$tmpdir/${script_tag}_${DATA}"
+	trap 'rm -f "$run_prefix"_run_*.txt' EXIT
 
 	echo "------ STARTING RUNS FOR $DATA ------"
 
 	for i in $(seq -w 1 $runs); do
 	echo "RUN $i/$runs"
-	$cmd > "$tmpdir/run_$i.txt"
+	$cmd > "${run_prefix}_run_$i.txt"
 	done
 
 	awk '
 	/^total phases of algorithm completed/ { exit }
 	{ print }
-	' "$tmpdir/run_01.txt"
+	' "${run_prefix}_run_01.txt"
 
 	echo
 	echo "[AVERAGE] {"
@@ -85,7 +88,9 @@ for DATA in "g75k" "g80k" "g85k" ; do
 		}
 		}
 	}
-	' "$tmpdir"/run_0[2-9].txt "$tmpdir"/run_1[0-1].txt
+	' "${run_prefix}"_run_0[2-9].txt "${run_prefix}"_run_1[0-1].txt
 	echo "}"
 	echo "------ END RUNS FOR $DATA ------"
+	rm -f "${run_prefix}"_run_*.txt
+	trap - EXIT
 done

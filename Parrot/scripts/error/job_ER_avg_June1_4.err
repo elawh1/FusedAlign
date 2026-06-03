@@ -1,0 +1,99 @@
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625070 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625071 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625072 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625073 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625074 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625075 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625076 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625077 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625078 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625079 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625080 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625085 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625086 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625087 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625088 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625089 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625090 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625091 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625092 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625093 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625094 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625095 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625100 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625101 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625102 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625103 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625104 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625105 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625106 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625107 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625108 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625109 Aborted                 $cmd > "$tmpdir/run_$i.txt"
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cannot open config.txt
+/var/spool/slurmd/job53724537/slurm_script: line 25: 625110 Aborted                 $cmd > "$tmpdir/run_$i.txt"
