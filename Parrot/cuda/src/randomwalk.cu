@@ -72,119 +72,6 @@ __global__ void add_restart_entries_kernel(element_type* x,
     x[offset] += restart_prob;
 }
 
-constexpr int kCustomSpmmBlockSize = 256;
-
-bool env_flag_enabled(const char* env_name) {
-    const char* env_value = std::getenv(env_name);
-    if (env_value == nullptr || env_value[0] == '\0') {
-        return false;
-    }
-
-    const std::string value(env_value);
-    return value == "1" || value == "true" || value == "TRUE" ||
-           value == "on" || value == "ON" || value == "yes" ||
-           value == "YES" || value == "custom" || value == "CUSTOM";
-}
-
-__global__ void csr_spmm_row_major_kernel(const int* __restrict__ row_offsets,
-                                          const int* __restrict__ col_ind,
-                                          const element_type* __restrict__ vals,
-                                          int rows,
-                                          int dense_cols,
-                                          element_type alpha,
-                                          const element_type* __restrict__ B,
-                                          element_type beta,
-                                          element_type* __restrict__ C) {
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t total = static_cast<size_t>(rows) * dense_cols;
-    if (idx >= total) {
-        return;
-    }
-
-    const int row = static_cast<int>(idx / dense_cols);
-    const int col = static_cast<int>(idx - static_cast<size_t>(row) * dense_cols);
-    element_type out_val = static_cast<element_type>(0.0);
-    if (beta != static_cast<element_type>(0.0)) {
-        out_val = (beta == static_cast<element_type>(1.0)) ? C[idx] : beta * C[idx];
-    }
-    if (alpha != static_cast<element_type>(0.0)) {
-        const int row_start = row_offsets[row];
-        const int row_end = row_offsets[row + 1];
-        for (int p = row_start; p < row_end; ++p) {
-            const int k = col_ind[p];
-            out_val += alpha * vals[p] * B[static_cast<size_t>(k) * dense_cols + col];
-        }
-    }
-    C[idx] = out_val;
-}
-
-__global__ void csr_spmm_col_major_kernel(const int* __restrict__ row_offsets,
-                                          const int* __restrict__ col_ind,
-                                          const element_type* __restrict__ vals,
-                                          int rows,
-                                          int dense_cols,
-                                          element_type alpha,
-                                          const element_type* __restrict__ B,
-                                          element_type beta,
-                                          element_type* __restrict__ C) {
-    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t total = static_cast<size_t>(rows) * dense_cols;
-    if (idx >= total) {
-        return;
-    }
-
-    const int col = static_cast<int>(idx / rows);
-    const int row = static_cast<int>(idx - static_cast<size_t>(col) * rows);
-    const size_t out_idx = static_cast<size_t>(row) + static_cast<size_t>(col) * rows;
-    element_type out_val = static_cast<element_type>(0.0);
-    if (beta != static_cast<element_type>(0.0)) {
-        out_val = (beta == static_cast<element_type>(1.0)) ? C[out_idx] : beta * C[out_idx];
-    }
-    if (alpha != static_cast<element_type>(0.0)) {
-        const int row_start = row_offsets[row];
-        const int row_end = row_offsets[row + 1];
-        for (int p = row_start; p < row_end; ++p) {
-            const int k = col_ind[p];
-            out_val += alpha * vals[p] * B[static_cast<size_t>(k) + static_cast<size_t>(col) * rows];
-        }
-    }
-    C[out_idx] = out_val;
-}
-
-void custom_csr_spmm_row_major(const CudaCsrMatrix& graph,
-                               int dense_cols,
-                               element_type alpha,
-                               const element_type* d_B,
-                               element_type beta,
-                               element_type* d_C) {
-    const size_t total = static_cast<size_t>(graph.rows) * dense_cols;
-    if (total == 0) {
-        return;
-    }
-    const unsigned int blocks = static_cast<unsigned int>((total + kCustomSpmmBlockSize - 1) / kCustomSpmmBlockSize);
-    csr_spmm_row_major_kernel<<<blocks, kCustomSpmmBlockSize>>>(
-        graph.d_row_offsets, graph.d_col_ind, graph.d_vals,
-        graph.rows, dense_cols, alpha, d_B, beta, d_C);
-    CHECK_CUDA(cudaGetLastError());
-}
-
-void custom_csr_spmm_col_major(const CudaCsrMatrix& graph,
-                               int dense_cols,
-                               element_type alpha,
-                               const element_type* d_B,
-                               element_type beta,
-                               element_type* d_C) {
-    const size_t total = static_cast<size_t>(graph.rows) * dense_cols;
-    if (total == 0) {
-        return;
-    }
-    const unsigned int blocks = static_cast<unsigned int>((total + kCustomSpmmBlockSize - 1) / kCustomSpmmBlockSize);
-    csr_spmm_col_major_kernel<<<blocks, kCustomSpmmBlockSize>>>(
-        graph.d_row_offsets, graph.d_col_ind, graph.d_vals,
-        graph.rows, dense_cols, alpha, d_B, beta, d_C);
-    CHECK_CUDA(cudaGetLastError());
-}
-
 constexpr int kRwrTransposeTileDim = 32;
 constexpr int kRwrTransposeBlockRows = 8;
 
@@ -606,12 +493,8 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
                                          element_type* d_out_cross_dist_result,
                                          int max_iters, element_type tol) {
     const size_t N = static_cast<size_t>(n1) * static_cast<size_t>(n2);
-    const bool use_custom_spmm = env_flag_enabled("CUDA_CROSS_USE_CUSTOM_SPMM");
     const CudaSpmmAlgorithm spmm_alg = select_cuda_spmm_algorithm("CUDA_CROSS_SPMM_ALG");
-    DEBUG_ONLY(std::cout << "cross propagation spmm backend: "
-                          << (use_custom_spmm ? "custom" : "cusparse") << std::endl);
-    DEBUG_ONLY(std::cout << "cross propagation spmm alg: "
-                          << (use_custom_spmm ? "custom_cpu_layout" : spmm_alg.name) << std::endl);
+    DEBUG_ONLY(std::cout << "cross propagation spmm alg: " << spmm_alg.name << std::endl);
     DEBUG_ONLY(std::cout << "cross propagation dense order: mixed_col_major" << std::endl);
 
     const bool timing_enabled = cross_timing_enabled();
@@ -648,37 +531,29 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
     section_start = cross_timing_now(timing_enabled);
     cusparseHandle_t sp_handle = nullptr;
     cublasHandle_t blas_handle = nullptr;
-    if (!use_custom_spmm) {
-        CHECK_CUSPARSE(cusparseCreate(&sp_handle));
-    }
+    CHECK_CUSPARSE(cusparseCreate(&sp_handle));
     CHECK_CUBLAS(cublasCreate(&blas_handle));
 
-    CudaSpMatView G1;
-    CudaSpMatView G2;
-    if (!use_custom_spmm) {
-        G1 = create_spmm_matrix_view(graph1_normalized);
-        G2 = create_spmm_matrix_view(graph2_normalized);
-    }
+    CudaSpMatView G1 = create_spmm_matrix_view(graph1_normalized);
+    CudaSpMatView G2 = create_spmm_matrix_view(graph2_normalized);
 
     cusparseDnMatDescr_t out_cross_dist_old_t_n2xn1 = nullptr;
     cusparseDnMatDescr_t temp_t_n2xn1 = nullptr;
     cusparseDnMatDescr_t temp_n1xn2 = nullptr;
     cusparseDnMatDescr_t out_cross_dist_n1xn2 = nullptr;
 
-    if (!use_custom_spmm) {
-        // Row-major n2 x n1 view over out_cross_dist_old storage, equivalent to out_cross_dist_old^T.
-        CHECK_CUSPARSE(cusparseCreateDnMat(
-            &out_cross_dist_old_t_n2xn1, n2, n1, n1, d_out_cross_dist_old, CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
-        // Row-major n2 x n1 view over the same temp storage, equivalent to temp^T.
-        CHECK_CUSPARSE(cusparseCreateDnMat(
-            &temp_t_n2xn1, n2, n1, n1, d_temp, CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
-        // Column-major view of temp, matching the second MKL SpMM in the CPU path.
-        CHECK_CUSPARSE(cusparseCreateDnMat(
-            &temp_n1xn2, n1, n2, n1, d_temp, CUDA_R_TYPE, CUSPARSE_ORDER_COL));
-        // Column-major view of out_cross_dist.
-        CHECK_CUSPARSE(cusparseCreateDnMat(
-            &out_cross_dist_n1xn2, n1, n2, n1, d_out_cross_dist, CUDA_R_TYPE, CUSPARSE_ORDER_COL));
-    }
+    // Row-major n2 x n1 view over out_cross_dist_old storage, equivalent to out_cross_dist_old^T.
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &out_cross_dist_old_t_n2xn1, n2, n1, n1, d_out_cross_dist_old, CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
+    // Row-major n2 x n1 view over the same temp storage, equivalent to temp^T.
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &temp_t_n2xn1, n2, n1, n1, d_temp, CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
+    // Column-major view of temp, matching the second MKL SpMM in the CPU path.
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &temp_n1xn2, n1, n2, n1, d_temp, CUDA_R_TYPE, CUSPARSE_ORDER_COL));
+    // Column-major view of out_cross_dist.
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &out_cross_dist_n1xn2, n1, n2, n1, d_out_cross_dist, CUDA_R_TYPE, CUSPARSE_ORDER_COL));
     setup_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
     void* d_spmm1_buffer = nullptr;
@@ -686,69 +561,67 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
     size_t spmm1_buffer_size = 0, spmm2_buffer_size = 0;
 
     section_start = cross_timing_now(timing_enabled);
-    if (!use_custom_spmm) {
-        element_type alpha1 = static_cast<element_type>(1.0);
-        element_type beta1  = static_cast<element_type>(0.0);
+    element_type alpha1 = static_cast<element_type>(1.0);
+    element_type beta1  = static_cast<element_type>(0.0);
 
-        CHECK_CUSPARSE(cusparseSpMM_bufferSize(
-            sp_handle,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha1,
-            G2.descr,
-            out_cross_dist_old_t_n2xn1,
-            &beta1,
-            temp_t_n2xn1,
-            CUDA_R_TYPE,
-            spmm_alg.value,
-            &spmm1_buffer_size));
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(
+        sp_handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha1,
+        G2.descr,
+        out_cross_dist_old_t_n2xn1,
+        &beta1,
+        temp_t_n2xn1,
+        CUDA_R_TYPE,
+        spmm_alg.value,
+        &spmm1_buffer_size));
 
-        CHECK_CUDA(CUDA_MALLOC(&d_spmm1_buffer, spmm1_buffer_size));
+    CHECK_CUDA(CUDA_MALLOC(&d_spmm1_buffer, spmm1_buffer_size));
 
-        CHECK_CUSPARSE(cusparseSpMM_preprocess(
-            sp_handle,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha1,
-            G2.descr,
-            out_cross_dist_old_t_n2xn1,
-            &beta1,
-            temp_t_n2xn1,
-            CUDA_R_TYPE,
-            spmm_alg.value,
-            d_spmm1_buffer));
+    CHECK_CUSPARSE(cusparseSpMM_preprocess(
+        sp_handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha1,
+        G2.descr,
+        out_cross_dist_old_t_n2xn1,
+        &beta1,
+        temp_t_n2xn1,
+        CUDA_R_TYPE,
+        spmm_alg.value,
+        d_spmm1_buffer));
 
-        element_type alpha2 = (static_cast<element_type>(1.0) - rwr_restart_prob) * gamma;
-        element_type beta2  = static_cast<element_type>(0.0);
+    element_type alpha2 = (static_cast<element_type>(1.0) - rwr_restart_prob) * gamma;
+    element_type beta2  = static_cast<element_type>(0.0);
 
-        CHECK_CUSPARSE(cusparseSpMM_bufferSize(
-            sp_handle,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha2,
-            G1.descr,
-            temp_n1xn2,
-            &beta2,
-            out_cross_dist_n1xn2,
-            CUDA_R_TYPE,
-            spmm_alg.value,
-            &spmm2_buffer_size));
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(
+        sp_handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha2,
+        G1.descr,
+        temp_n1xn2,
+        &beta2,
+        out_cross_dist_n1xn2,
+        CUDA_R_TYPE,
+        spmm_alg.value,
+        &spmm2_buffer_size));
 
-        CHECK_CUDA(CUDA_MALLOC(&d_spmm2_buffer, spmm2_buffer_size));
+    CHECK_CUDA(CUDA_MALLOC(&d_spmm2_buffer, spmm2_buffer_size));
 
-        CHECK_CUSPARSE(cusparseSpMM_preprocess(
-            sp_handle,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &alpha2,
-            G1.descr,
-            temp_n1xn2,
-            &beta2,
-            out_cross_dist_n1xn2,
-            CUDA_R_TYPE,
-            spmm_alg.value,
-            d_spmm2_buffer));
-    }
+    CHECK_CUSPARSE(cusparseSpMM_preprocess(
+        sp_handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha2,
+        G1.descr,
+        temp_n1xn2,
+        &beta2,
+        out_cross_dist_n1xn2,
+        CUDA_R_TYPE,
+        spmm_alg.value,
+        d_spmm2_buffer));
     preprocess_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
     element_type* d_out_cross_dist_final = d_out_cross_dist_old;
@@ -758,22 +631,18 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
             element_type alpha = static_cast<element_type>(1.0);
             element_type beta  = static_cast<element_type>(0.0);
 
-            if (use_custom_spmm) {
-                custom_csr_spmm_row_major(graph2_normalized, n1, alpha, d_out_cross_dist_old, beta, d_temp);
-            } else {
-                CHECK_CUSPARSE(cusparseSpMM(
-                    sp_handle,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    &alpha,
-                    G2.descr,
-                    out_cross_dist_old_t_n2xn1,
-                    &beta,
-                    temp_t_n2xn1,
-                    CUDA_R_TYPE,
-                    spmm_alg.value,
-                    d_spmm1_buffer));
-            }
+            CHECK_CUSPARSE(cusparseSpMM(
+                sp_handle,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                &alpha,
+                G2.descr,
+                out_cross_dist_old_t_n2xn1,
+                &beta,
+                temp_t_n2xn1,
+                CUDA_R_TYPE,
+                spmm_alg.value,
+                d_spmm1_buffer));
         }
         loop_spmm1_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
@@ -782,22 +651,18 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
             element_type alpha = (static_cast<element_type>(1.0) - rwr_restart_prob) * gamma;
             element_type beta  = static_cast<element_type>(0.0);
 
-            if (use_custom_spmm) {
-                custom_csr_spmm_col_major(graph1_normalized, n2, alpha, d_temp, beta, d_out_cross_dist);
-            } else {
-                CHECK_CUSPARSE(cusparseSpMM(
-                    sp_handle,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    CUSPARSE_OPERATION_NON_TRANSPOSE,
-                    &alpha,
-                    G1.descr,
-                    temp_n1xn2,
-                    &beta,
-                    out_cross_dist_n1xn2,
-                    CUDA_R_TYPE,
-                    spmm_alg.value,
-                    d_spmm2_buffer));
-            }
+            CHECK_CUSPARSE(cusparseSpMM(
+                sp_handle,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                &alpha,
+                G1.descr,
+                temp_n1xn2,
+                &beta,
+                out_cross_dist_n1xn2,
+                CUDA_R_TYPE,
+                spmm_alg.value,
+                d_spmm2_buffer));
         }
         loop_spmm2_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
 
@@ -822,10 +687,8 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
 
         section_start = cross_timing_now(timing_enabled);
         std::swap(d_out_cross_dist_old, d_out_cross_dist);
-        if (!use_custom_spmm) {
-            CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_old_t_n2xn1, d_out_cross_dist_old));
-            CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_n1xn2, d_out_cross_dist));
-        }
+        CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_old_t_n2xn1, d_out_cross_dist_old));
+        CHECK_CUSPARSE(cusparseDnMatSetValues(out_cross_dist_n1xn2, d_out_cross_dist));
         d_out_cross_dist_final = d_out_cross_dist_old;
         loop_swap_ms += cross_timing_elapsed_ms(timing_enabled, section_start);
     }
@@ -845,17 +708,15 @@ void get_product_rwr_mat_cusparse_device(const CudaCsrMatrix& graph1_normalized,
         CHECK_CUDA(CUDA_FREE(d_spmm2_buffer));
     }
 
-    if (!use_custom_spmm) {
-        CHECK_CUSPARSE(cusparseDestroyDnMat(out_cross_dist_n1xn2));
-        CHECK_CUSPARSE(cusparseDestroyDnMat(temp_n1xn2));
-        CHECK_CUSPARSE(cusparseDestroyDnMat(temp_t_n2xn1));
-        CHECK_CUSPARSE(cusparseDestroyDnMat(out_cross_dist_old_t_n2xn1));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(out_cross_dist_n1xn2));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(temp_n1xn2));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(temp_t_n2xn1));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(out_cross_dist_old_t_n2xn1));
 
-        destroy_spmm_matrix_view(G2);
-        destroy_spmm_matrix_view(G1);
+    destroy_spmm_matrix_view(G2);
+    destroy_spmm_matrix_view(G1);
 
-        CHECK_CUSPARSE(cusparseDestroy(sp_handle));
-    }
+    CHECK_CUSPARSE(cusparseDestroy(sp_handle));
     CHECK_CUBLAS(cublasDestroy(blas_handle));
 
     CHECK_CUDA(CUDA_FREE(d_temp));
