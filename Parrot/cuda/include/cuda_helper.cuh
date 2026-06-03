@@ -21,7 +21,6 @@
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cublas_v2.h>
-#include <cusparseLt.h>
 
 #ifdef DEBUG
 #define DEBUG_ONLY(stmt) \
@@ -64,50 +63,41 @@ do {                                                                            
     }                                                                            \
 } while (0)
 
-#define CHECK_CUSPARSELT(func) {                                                 \
-    cusparseStatus_t status = (func);                                            \
-    if (status != CUSPARSE_STATUS_SUCCESS) {                                     \
-        std::cerr << "cuSPARSELt Error: " << status << " at line " << __LINE__  \
-                  << std::endl;                                                  \
-        exit(EXIT_FAILURE);                                                      \
-    }                                                                            \
-}
-
-#if defined(PARROT_ELEMENT_FLOAT) && defined(PARROT_ELEMENT_DOUBLE)
-#error "Define only one of PARROT_ELEMENT_FLOAT or PARROT_ELEMENT_DOUBLE"
+#if defined(CUDA_ELEMENT_FLOAT) && defined(CUDA_ELEMENT_DOUBLE)
+#error "Define only one of CUDA_ELEMENT_FLOAT or CUDA_ELEMENT_DOUBLE"
 #endif
 
-#if defined(PARROT_ELEMENT_FLOAT)
+#if defined(CUDA_ELEMENT_FLOAT)
 using element_type = float;
-constexpr cudaDataType PARROT_CUDA_R_TYPE = CUDA_R_32F;
-constexpr const char* PARROT_ELEMENT_TYPE_NAME = "float";
-#define PARROT_USE_FLOAT 1
+constexpr cudaDataType CUDA_R_TYPE = CUDA_R_32F;
+constexpr const char* CUDA_ELEMENT_TYPE_NAME = "float";
+#define CUDA_USE_FLOAT 1
 #else
 using element_type = double;
-constexpr cudaDataType PARROT_CUDA_R_TYPE = CUDA_R_64F;
-constexpr const char* PARROT_ELEMENT_TYPE_NAME = "double";
-#define PARROT_USE_FLOAT 0
+constexpr cudaDataType CUDA_R_TYPE = CUDA_R_64F;
+constexpr const char* CUDA_ELEMENT_TYPE_NAME = "double";
+#define CUDA_USE_FLOAT 0
 #endif
 
-inline cublasStatus_t parrot_cublas_axpy(cublasHandle_t handle, int n, const element_type* alpha,
+inline cublasStatus_t cuda_cublas_axpy(cublasHandle_t handle, int n, const element_type* alpha,
                                          const element_type* x, int incx, element_type* y, int incy) {
-#if PARROT_USE_FLOAT
+#if CUDA_USE_FLOAT
         return cublasSaxpy(handle, n, alpha, x, incx, y, incy);
 #else
         return cublasDaxpy(handle, n, alpha, x, incx, y, incy);
 #endif
 }
 
-inline cublasStatus_t parrot_cublas_scal(cublasHandle_t handle, int n, const element_type* alpha,
+inline cublasStatus_t cuda_cublas_scal(cublasHandle_t handle, int n, const element_type* alpha,
                                          element_type* x, int incx) {
-#if PARROT_USE_FLOAT
+#if CUDA_USE_FLOAT
         return cublasSscal(handle, n, alpha, x, incx);
 #else
         return cublasDscal(handle, n, alpha, x, incx);
 #endif
 }
 
-inline cublasStatus_t parrot_cublas_gemm(cublasHandle_t handle,
+inline cublasStatus_t cuda_cublas_gemm(cublasHandle_t handle,
                                          cublasOperation_t transa,
                                          cublasOperation_t transb,
                                          int m, int n, int k,
@@ -116,14 +106,14 @@ inline cublasStatus_t parrot_cublas_gemm(cublasHandle_t handle,
                                          const element_type* B, int ldb,
                                          const element_type* beta,
                                          element_type* C, int ldc) {
-#if PARROT_USE_FLOAT
+#if CUDA_USE_FLOAT
         return cublasSgemm(handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
 #else
         return cublasDgemm(handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
 #endif
 }
 
-inline cublasStatus_t parrot_cublas_geam(cublasHandle_t handle,
+inline cublasStatus_t cuda_cublas_geam(cublasHandle_t handle,
                                          cublasOperation_t transa,
                                          cublasOperation_t transb,
                                          int m, int n,
@@ -132,50 +122,40 @@ inline cublasStatus_t parrot_cublas_geam(cublasHandle_t handle,
                                          const element_type* beta,
                                          const element_type* B, int ldb,
                                          element_type* C, int ldc) {
-#if PARROT_USE_FLOAT
+#if CUDA_USE_FLOAT
         return cublasSgeam(handle, transa, transb, m, n, alpha, A, lda, beta, B, ldb, C, ldc);
 #else
         return cublasDgeam(handle, transa, transb, m, n, alpha, A, lda, beta, B, ldb, C, ldc);
 #endif
 }
 
-inline cublasStatus_t parrot_cublas_dot(cublasHandle_t handle, int n,
+inline cublasStatus_t cuda_cublas_dot(cublasHandle_t handle, int n,
                                         const element_type* x, int incx,
                                         const element_type* y, int incy,
                                         element_type* result) {
-#if PARROT_USE_FLOAT
+#if CUDA_USE_FLOAT
         return cublasSdot(handle, n, x, incx, y, incy, result);
 #else
         return cublasDdot(handle, n, x, incx, y, incy, result);
 #endif
 }
 
-inline cublasStatus_t parrot_cublas_asum(cublasHandle_t handle, int n,
+inline cublasStatus_t cuda_cublas_asum(cublasHandle_t handle, int n,
                                          const element_type* x, int incx,
                                          element_type* result) {
-#if PARROT_USE_FLOAT
+#if CUDA_USE_FLOAT
         return cublasSasum(handle, n, x, incx, result);
 #else
         return cublasDasum(handle, n, x, incx, result);
 #endif
 }
 
-inline cublasStatus_t parrot_cublas_iamax(cublasHandle_t handle, int n,
-                                          const element_type* x, int incx,
-                                          int* result) {
-#if PARROT_USE_FLOAT
-        return cublasIsamax(handle, n, x, incx, result);
-#else
-        return cublasIdamax(handle, n, x, incx, result);
-#endif
-}
-
-struct ParrotSpmmAlgorithm {
+struct CudaSpmmAlgorithm {
     cusparseSpMMAlg_t value;
     const char* name;
 };
 
-inline ParrotSpmmAlgorithm select_parrot_spmm_algorithm(const char* env_name) {
+inline CudaSpmmAlgorithm select_cuda_spmm_algorithm(const char* env_name) {
     const char* env_value = std::getenv(env_name);
     if (env_value == nullptr || env_value[0] == '\0') {
         return {CUSPARSE_SPMM_ALG_DEFAULT, "default"};
@@ -233,32 +213,40 @@ struct BatchRwrContext {
 };
 
 #ifdef DEBUG
-void parrot_cuda_memtracker_reset();
-void parrot_cuda_memtracker_report_peak(const char* label = nullptr);
-cudaError_t parrot_cuda_malloc_tracked(void** ptr, size_t bytes, const char* file, int line);
-cudaError_t parrot_cuda_free_tracked(void* ptr, const char* file, int line);
+void cuda_memtracker_reset();
+void cuda_memtracker_report_peak(const char* label = nullptr);
+cudaError_t cuda_malloc_tracked(void** ptr, size_t bytes, const char* file, int line);
+cudaError_t cuda_free_tracked(void* ptr, const char* file, int line);
 #else
-inline void parrot_cuda_memtracker_reset() {}
-inline void parrot_cuda_memtracker_report_peak(const char* label = nullptr) {
+inline void cuda_memtracker_reset() {}
+inline void cuda_memtracker_report_peak(const char* label = nullptr) {
     (void)label;
 }
-inline cudaError_t parrot_cuda_malloc_tracked(void** ptr, size_t bytes, const char* file, int line) {
+inline cudaError_t cuda_malloc_tracked(void** ptr, size_t bytes, const char* file, int line) {
     (void)file;
     (void)line;
     return cudaMalloc(ptr, bytes);
 }
-inline cudaError_t parrot_cuda_free_tracked(void* ptr, const char* file, int line) {
+inline cudaError_t cuda_free_tracked(void* ptr, const char* file, int line) {
     (void)file;
     (void)line;
     return cudaFree(ptr);
 }
 #endif
 
-#define PARROT_CUDA_MALLOC(ptr, bytes) \
-    parrot_cuda_malloc_tracked(reinterpret_cast<void**>(ptr), static_cast<size_t>(bytes), __FILE__, __LINE__)
+#define CUDA_MALLOC(ptr, bytes) \
+    cuda_malloc_tracked(reinterpret_cast<void**>(ptr), static_cast<size_t>(bytes), __FILE__, __LINE__)
 
-#define PARROT_CUDA_FREE(ptr) \
-    parrot_cuda_free_tracked(reinterpret_cast<void*>(ptr), __FILE__, __LINE__)
+#define CUDA_FREE(ptr) \
+    cuda_free_tracked(reinterpret_cast<void*>(ptr), __FILE__, __LINE__)
+
+template <typename T>
+inline void cuda_free_and_null(T*& ptr) {
+    if (ptr != nullptr) {
+        CHECK_CUDA(CUDA_FREE(ptr));
+        ptr = nullptr;
+    }
+}
 
 void destroy_cuda_csr(CudaCsrMatrix& matrix);
 CudaCsrMatrix make_cuda_csr_from_edgelist(const std::vector<element_type>& edgelist, int m, int n);
@@ -271,7 +259,7 @@ void destroy_batch_rwr_context(BatchRwrContext& context);
 void load_config(const std::string& data_path, int& g1_num_nodes, int& g2_num_nodes,
                  bool& use_attr, bool& directed, int& inner_iters, int& outer_iters);
 std::vector<element_type> readFileToVector(const std::string& filename, bool directed);
-std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(std::vector<element_type>& H_vec);
+std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(const std::vector<element_type>& H_vec);
 void get_batch_rwr_scores_cusparse_device(const CudaCsrMatrix& graph, std::vector<int> anchors,
                                           int n, float restart_prob, int max_iters,
                                           element_type* d_X_out, BatchRwrContext& context);

@@ -57,7 +57,7 @@ std::vector<element_type> readFileToVector(const std::string& filename, bool dir
     return data;
 }
 
-std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(std::vector<element_type>& H_vec) {
+std::pair<std::vector<int>, std::vector<int>> get_anchor_pairs(const std::vector<element_type>& H_vec) {
     if (H_vec.size() % 2 != 0) {
         throw std::invalid_argument("anchor vector must contain pairs");
     }

@@ -17,7 +17,7 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
 
     element_type* d_vals = nullptr;
 
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_vals, sizeof(element_type) * nnz));
+    CHECK_CUDA(CUDA_MALLOC(&d_vals, sizeof(element_type) * nnz));
     CHECK_CUDA(cudaMemset(d_vals, 0, sizeof(element_type) * nnz));
 
     cusparseHandle_t handle = nullptr;
@@ -28,10 +28,10 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
     cusparseSpMatDescr_t matC = nullptr;
 
     CHECK_CUSPARSE(cusparseCreateDnMat(
-        &matA, n, L, n, const_cast<element_type*>(d_emb), PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_COL));
+        &matA, n, L, n, const_cast<element_type*>(d_emb), CUDA_R_TYPE, CUSPARSE_ORDER_COL));
 
     CHECK_CUSPARSE(cusparseCreateDnMat(
-        &matB, n, L, n, const_cast<element_type*>(d_emb), PARROT_CUDA_R_TYPE, CUSPARSE_ORDER_COL));
+        &matB, n, L, n, const_cast<element_type*>(d_emb), CUDA_R_TYPE, CUSPARSE_ORDER_COL));
 
     CHECK_CUSPARSE(cusparseCreateCsr(
         &matC,
@@ -42,7 +42,7 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
         CUSPARSE_INDEX_32I,
         CUSPARSE_INDEX_32I,
         CUSPARSE_INDEX_BASE_ZERO,
-        PARROT_CUDA_R_TYPE));
+        CUDA_R_TYPE));
 
     const element_type alpha = static_cast<element_type>(1.0);
     const element_type beta = static_cast<element_type>(0.0);
@@ -59,11 +59,11 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
         matB,
         &beta,
         matC,
-        PARROT_CUDA_R_TYPE,
+        CUDA_R_TYPE,
         CUSPARSE_SDDMM_ALG_DEFAULT,
         &workspace_size));
 
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_workspace, workspace_size));
+    CHECK_CUDA(CUDA_MALLOC(&d_workspace, workspace_size));
 
     CHECK_CUSPARSE(cusparseSDDMM_preprocess(
         handle,
@@ -74,7 +74,7 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
         matB,
         &beta,
         matC,
-        PARROT_CUDA_R_TYPE,
+        CUDA_R_TYPE,
         CUSPARSE_SDDMM_ALG_DEFAULT,
         d_workspace));
 
@@ -87,7 +87,7 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
         matB,
         &beta,
         matC,
-        PARROT_CUDA_R_TYPE,
+        CUDA_R_TYPE,
         CUSPARSE_SDDMM_ALG_DEFAULT,
         d_workspace));
 
@@ -98,7 +98,7 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
         CHECK_CUDA(cudaGetLastError());
     }
 
-    CHECK_CUDA(PARROT_CUDA_FREE(d_workspace));
+    CHECK_CUDA(CUDA_FREE(d_workspace));
     cusparseDestroySpMat(matC);
     cusparseDestroyDnMat(matA);
     cusparseDestroyDnMat(matB);
@@ -109,8 +109,8 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
     result.cols = n;
     result.nnz = nnz;
     result.d_vals = d_vals;
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&result.d_row_offsets, sizeof(int) * (static_cast<size_t>(n) + 1)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&result.d_col_ind, sizeof(int) * static_cast<size_t>(nnz)));
+    CHECK_CUDA(CUDA_MALLOC(&result.d_row_offsets, sizeof(int) * (static_cast<size_t>(n) + 1)));
+    CHECK_CUDA(CUDA_MALLOC(&result.d_col_ind, sizeof(int) * static_cast<size_t>(nnz)));
     CHECK_CUDA(cudaMemcpy(result.d_row_offsets, mask.d_row_offsets, sizeof(int) * (static_cast<size_t>(n) + 1), cudaMemcpyDeviceToDevice));
     CHECK_CUDA(cudaMemcpy(result.d_col_ind, mask.d_col_ind, sizeof(int) * static_cast<size_t>(nnz), cudaMemcpyDeviceToDevice));
     CHECK_CUSPARSE(cusparseCreateCsr(
@@ -124,6 +124,6 @@ CudaCsrMatrix masked_sddmm_intra_cost_cusparse_device(
         CUSPARSE_INDEX_32I,
         CUSPARSE_INDEX_32I,
         CUSPARSE_INDEX_BASE_ZERO,
-        PARROT_CUDA_R_TYPE));
+        CUDA_R_TYPE));
     return result;
 }

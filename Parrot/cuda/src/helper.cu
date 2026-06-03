@@ -46,15 +46,15 @@ void destroy_cuda_csr(CudaCsrMatrix& matrix) {
         matrix.descr = nullptr;
     }
     if (matrix.d_vals != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(matrix.d_vals));
+        CHECK_CUDA(CUDA_FREE(matrix.d_vals));
         matrix.d_vals = nullptr;
     }
     if (matrix.d_col_ind != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(matrix.d_col_ind));
+        CHECK_CUDA(CUDA_FREE(matrix.d_col_ind));
         matrix.d_col_ind = nullptr;
     }
     if (matrix.d_row_offsets != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(matrix.d_row_offsets));
+        CHECK_CUDA(CUDA_FREE(matrix.d_row_offsets));
         matrix.d_row_offsets = nullptr;
     }
     matrix.rows = 0;
@@ -101,19 +101,6 @@ __global__ void csr_row_sum_kernel(const int* row_offsets, const element_type* v
     row_sums[row] = sum;
 }
 
-__global__ void csr_scale_rows_kernel(const int* row_offsets, element_type* values, const element_type* row_sums, int rows) {
-    const int row = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (row >= rows) return;
-
-    const element_type row_sum = row_sums[row];
-    if (row_sum <= static_cast<element_type>(1e-10)) return;
-
-    const element_type inv = static_cast<element_type>(1.0) / row_sum;
-    for (int idx = row_offsets[row]; idx < row_offsets[row + 1]; ++idx) {
-        values[idx] *= inv;
-    }
-}
-
 struct CublasHandle {
     cublasHandle_t handle = nullptr;
     CublasHandle() {
@@ -147,9 +134,9 @@ CudaCsrMatrix make_cuda_csr_from_host_impl(int rows,
     matrix.rows = rows;
     matrix.cols = cols;
     matrix.nnz = static_cast<int>(h_vals.size());
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&matrix.d_row_offsets, (rows + 1) * sizeof(int)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&matrix.d_col_ind, matrix.nnz * sizeof(int)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&matrix.d_vals, matrix.nnz * sizeof(element_type)));
+    CHECK_CUDA(CUDA_MALLOC(&matrix.d_row_offsets, (rows + 1) * sizeof(int)));
+    CHECK_CUDA(CUDA_MALLOC(&matrix.d_col_ind, matrix.nnz * sizeof(int)));
+    CHECK_CUDA(CUDA_MALLOC(&matrix.d_vals, matrix.nnz * sizeof(element_type)));
     CHECK_CUDA(cudaMemcpy(matrix.d_row_offsets, h_row_offsets.data(), (rows + 1) * sizeof(int), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(matrix.d_col_ind, h_col_ind.data(), matrix.nnz * sizeof(int), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(matrix.d_vals, h_vals.data(), matrix.nnz * sizeof(element_type), cudaMemcpyHostToDevice));
@@ -164,7 +151,7 @@ CudaCsrMatrix make_cuda_csr_from_host_impl(int rows,
                                      CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_BASE_ZERO,
-                                     PARROT_CUDA_R_TYPE));
+                                     CUDA_R_TYPE));
     return matrix;
 }
 
@@ -187,9 +174,9 @@ CudaCsrMatrix transpose_cuda_csr_impl(const CudaCsrMatrix& matrix) {
     result.cols = matrix.rows;
     result.nnz = matrix.nnz;
 
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&result.d_row_offsets, (static_cast<size_t>(result.rows) + 1) * sizeof(int)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&result.d_col_ind, static_cast<size_t>(result.nnz) * sizeof(int)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&result.d_vals, static_cast<size_t>(result.nnz) * sizeof(element_type)));
+    CHECK_CUDA(CUDA_MALLOC(&result.d_row_offsets, (static_cast<size_t>(result.rows) + 1) * sizeof(int)));
+    CHECK_CUDA(CUDA_MALLOC(&result.d_col_ind, static_cast<size_t>(result.nnz) * sizeof(int)));
+    CHECK_CUDA(CUDA_MALLOC(&result.d_vals, static_cast<size_t>(result.nnz) * sizeof(element_type)));
 
     size_t workspace_size = 0;
     void* d_workspace = nullptr;
@@ -204,14 +191,14 @@ CudaCsrMatrix transpose_cuda_csr_impl(const CudaCsrMatrix& matrix) {
         result.d_vals,
         result.d_row_offsets,
         result.d_col_ind,
-        PARROT_CUDA_R_TYPE,
+        CUDA_R_TYPE,
         CUSPARSE_ACTION_NUMERIC,
         CUSPARSE_INDEX_BASE_ZERO,
         CUSPARSE_CSR2CSC_ALG1,
         &workspace_size));
 
     if (workspace_size > 0) {
-        CHECK_CUDA(PARROT_CUDA_MALLOC(&d_workspace, workspace_size));
+        CHECK_CUDA(CUDA_MALLOC(&d_workspace, workspace_size));
     }
 
     CHECK_CUSPARSE(cusparseCsr2cscEx2(
@@ -225,14 +212,14 @@ CudaCsrMatrix transpose_cuda_csr_impl(const CudaCsrMatrix& matrix) {
         result.d_vals,
         result.d_row_offsets,
         result.d_col_ind,
-        PARROT_CUDA_R_TYPE,
+        CUDA_R_TYPE,
         CUSPARSE_ACTION_NUMERIC,
         CUSPARSE_INDEX_BASE_ZERO,
         CUSPARSE_CSR2CSC_ALG1,
         d_workspace));
 
     if (d_workspace != nullptr) {
-        CHECK_CUDA(PARROT_CUDA_FREE(d_workspace));
+        CHECK_CUDA(CUDA_FREE(d_workspace));
     }
 
     CHECK_CUSPARSE(cusparseCreateCsr(&result.descr,
@@ -245,7 +232,7 @@ CudaCsrMatrix transpose_cuda_csr_impl(const CudaCsrMatrix& matrix) {
                                      CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_BASE_ZERO,
-                                     PARROT_CUDA_R_TYPE));
+                                     CUDA_R_TYPE));
     return result;
 }
 
@@ -297,7 +284,7 @@ CudaSpMatView create_spmm_matrix_view(const CudaCsrMatrix& matrix) {
                                      CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_32I,
                                      CUSPARSE_INDEX_BASE_ZERO,
-                                     PARROT_CUDA_R_TYPE));
+                                     CUDA_R_TYPE));
 
     return view;
 }
@@ -314,14 +301,14 @@ void l2_norm_inplace_device(element_type* d_rwr, size_t n, size_t d) {
         return;
     }
     element_type* d_inv_norms = nullptr;
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_inv_norms, n * sizeof(element_type)));
+    CHECK_CUDA(CUDA_MALLOC(&d_inv_norms, n * sizeof(element_type)));
     compute_row_inv_l2_norms_kernel<<<static_cast<unsigned int>(n), kBlockSize>>>(d_rwr, n, d, d_inv_norms);
     CHECK_CUDA(cudaGetLastError());
     const size_t total = n * d;
     const unsigned int blocks = static_cast<unsigned int>((total + kBlockSize - 1) / kBlockSize);
     scale_rows_kernel<<<blocks, kBlockSize>>>(d_rwr, n, total, d_inv_norms);
     CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(PARROT_CUDA_FREE(d_inv_norms));
+    CHECK_CUDA(CUDA_FREE(d_inv_norms));
 }
 
 void get_normalized_neg_exp_dist_device(const element_type* d_rwr1,
@@ -337,7 +324,7 @@ void get_normalized_neg_exp_dist_device(const element_type* d_rwr1,
     const element_type alpha = static_cast<element_type>(-1.0);
     const element_type beta = static_cast<element_type>(0.0);
     CublasHandle handle;
-    CHECK_CUBLAS(parrot_cublas_gemm(handle.handle,
+    CHECK_CUBLAS(cuda_cublas_gemm(handle.handle,
                              CUBLAS_OP_N,
                              CUBLAS_OP_T,
                              n1,
@@ -384,8 +371,8 @@ void anchor_cost_zero_device(element_type* d_A,
     int* d_rows = nullptr;
     int* d_cols = nullptr;
     const size_t anchor_bytes = valid_rows.size() * sizeof(int);
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_rows, anchor_bytes));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_cols, anchor_bytes));
+    CHECK_CUDA(CUDA_MALLOC(&d_rows, anchor_bytes));
+    CHECK_CUDA(CUDA_MALLOC(&d_cols, anchor_bytes));
     CHECK_CUDA(cudaMemcpy(d_rows, valid_rows.data(), anchor_bytes, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_cols, valid_cols.data(), anchor_bytes, cudaMemcpyHostToDevice));
 
@@ -393,8 +380,8 @@ void anchor_cost_zero_device(element_type* d_A,
     anchor_cost_zero_kernel<<<blocks, kBlockSize>>>(d_A, nrows, d_rows, d_cols, static_cast<int>(valid_rows.size()), val);
     CHECK_CUDA(cudaGetLastError());
 
-    CHECK_CUDA(PARROT_CUDA_FREE(d_cols));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_rows));
+    CHECK_CUDA(CUDA_FREE(d_cols));
+    CHECK_CUDA(CUDA_FREE(d_rows));
 }
 
 CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_per_n) {
@@ -469,35 +456,17 @@ CudaCsrMatrix row_normalize_graph_cuda(const CudaCsrMatrix& graph, int avg_nnz_p
         h_vals.swap(merged_vals);
     }
 
-    int* d_row_offsets = nullptr;
-    element_type* d_vals = nullptr;
-    element_type* d_row_sums = nullptr;
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_row_offsets, (rows + 1) * sizeof(int)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_vals, h_vals.size() * sizeof(element_type)));
-    CHECK_CUDA(PARROT_CUDA_MALLOC(&d_row_sums, rows * sizeof(element_type)));
-    CHECK_CUDA(cudaMemcpy(d_row_offsets, h_row_offsets.data(), (rows + 1) * sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_vals, h_vals.data(), h_vals.size() * sizeof(element_type), cudaMemcpyHostToDevice));
-
-    const unsigned int blocks = static_cast<unsigned int>((rows + kBlockSize - 1) / kBlockSize);
-    csr_row_sum_kernel<<<blocks, kBlockSize>>>(d_row_offsets, d_vals, rows, d_row_sums);
-    CHECK_CUDA(cudaGetLastError());
-    csr_scale_rows_kernel<<<blocks, kBlockSize>>>(d_row_offsets, d_vals, d_row_sums, rows);
-    CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaMemcpy(h_vals.data(), d_vals, h_vals.size() * sizeof(element_type), cudaMemcpyDeviceToHost));
-
-    CHECK_CUDA(PARROT_CUDA_FREE(d_row_sums));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_vals));
-    CHECK_CUDA(PARROT_CUDA_FREE(d_row_offsets));
-
     for (int row = 0; row < rows; ++row) {
         element_type sum = static_cast<element_type>(0.0);
         for (int idx = h_row_offsets[row]; idx < h_row_offsets[row + 1]; ++idx) {
             sum += h_vals[idx];
         }
-        graph_row_sum[row] = sum;
-    }
-    for (int i = 0; i < static_cast<int>(graph_row_sum.size()); ++i) {
-        if (graph_row_sum[i] < 1e-10) DEBUG_ONLY(printf("333 graph_row_sum[%d] is zero \n", i));
+        if (sum > static_cast<element_type>(1e-10)) {
+            for (int idx = h_row_offsets[row]; idx < h_row_offsets[row + 1]; ++idx) {
+                h_vals[idx] /= sum;
+            }
+        }
+        DEBUG_ONLY(if (sum < 1e-10) printf("333 graph_row_sum[%d] is zero \n", row));
     }
 
     return make_cuda_csr_from_host_impl(rows, cols, h_row_offsets, h_col_ind, h_vals);
