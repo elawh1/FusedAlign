@@ -3,6 +3,7 @@
 namespace {
 
 constexpr int kBlockSize = 256;
+constexpr int kCustomSpmmBlockSize = 256;
 
 struct CublasHandle {
     cublasHandle_t handle = nullptr;
@@ -79,6 +80,55 @@ __global__ void col_major_to_row_major_kernel(const element_type* __restrict__ i
             out[static_cast<size_t>(gi) * cols + gj] = smem[threadIdx.y + dy][threadIdx.x];
         }
     }
+}
+
+__global__ void csr_spmm_row_major_kernel(const int* __restrict__ row_offsets,
+                                          const int* __restrict__ col_ind,
+                                          const element_type* __restrict__ vals,
+                                          int rows,
+                                          int dense_cols,
+                                          element_type alpha,
+                                          const element_type* __restrict__ B,
+                                          element_type beta,
+                                          element_type* __restrict__ C) {
+    const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(dense_cols);
+    if (idx >= total) {
+        return;
+    }
+
+    const int col = static_cast<int>(idx % static_cast<size_t>(dense_cols));
+    const int row = static_cast<int>(idx / static_cast<size_t>(dense_cols));
+    element_type out_val = static_cast<element_type>(0.0);
+    if (beta != static_cast<element_type>(0.0)) {
+        out_val = (beta == static_cast<element_type>(1.0)) ? C[idx] : beta * C[idx];
+    }
+    if (alpha != static_cast<element_type>(0.0)) {
+        const int row_start = row_offsets[row];
+        const int row_end = row_offsets[row + 1];
+        for (int p = row_start; p < row_end; ++p) {
+            const int k = col_ind[p];
+            out_val += alpha * vals[p] * B[static_cast<size_t>(k) * dense_cols + col];
+        }
+    }
+    C[idx] = out_val;
+}
+
+void custom_csr_spmm_row_major(const CudaCsrMatrix& graph,
+                               int dense_cols,
+                               element_type alpha,
+                               const element_type* d_B,
+                               element_type beta,
+                               element_type* d_C) {
+    const size_t total = static_cast<size_t>(graph.rows) * static_cast<size_t>(dense_cols);
+    if (total == 0) {
+        return;
+    }
+    const unsigned int blocks = static_cast<unsigned int>((total + kCustomSpmmBlockSize - 1) / kCustomSpmmBlockSize);
+    csr_spmm_row_major_kernel<<<blocks, kCustomSpmmBlockSize>>>(
+        graph.d_row_offsets, graph.d_col_ind, graph.d_vals,
+        graph.rows, dense_cols, alpha, d_B, beta, d_C);
+    CHECK_CUDA(cudaGetLastError());
 }
 
 __global__ void accumulate_cost_from_buffer2_kernel(const element_type* buffer2_row_major,
@@ -561,6 +611,7 @@ struct ComputeCostContext {
     size_t workspace_shared_size = 0;
     element_type* d_s_row_major_ptr = nullptr;
     element_type* d_cost_row_major_ptr = nullptr;
+    bool use_custom_spmm = false;
     bool use_graph1_transpose_view = false;
     bool benchmark_graph1_section = false;
     double graph1_convert_ms_total = 0.0;
@@ -609,6 +660,7 @@ void destroy_compute_cost_context(ComputeCostContext& context) {
     destroy_spmm_matrix_view(context.intra_dist2_view);
     context.d_s_row_major_ptr = nullptr;
     context.d_cost_row_major_ptr = nullptr;
+    context.use_custom_spmm = false;
     context.use_graph1_transpose_view = false;
     context.benchmark_graph1_section = false;
     context.graph1_convert_ms_total = 0.0;
@@ -662,7 +714,8 @@ void initialize_compute_cost_context(ComputeCostContext& context,
     context.matrix_size = static_cast<size_t>(n1) * static_cast<size_t>(n2);
     context.n1 = n1;
     context.n2 = n2;
-    context.use_graph1_transpose_view = env_flag_enabled("CUDA_COST_USE_TRANSPOSE_VIEW");
+    context.use_custom_spmm = env_flag_enabled("CUDA_COST_USE_CUSTOM_SPMM");
+    context.use_graph1_transpose_view = !context.use_custom_spmm && env_flag_enabled("CUDA_COST_USE_TRANSPOSE_VIEW");
 #ifdef DEBUG
     context.benchmark_graph1_section = true;
 #else
@@ -671,11 +724,21 @@ void initialize_compute_cost_context(ComputeCostContext& context,
     context.d_s_row_major_ptr = const_cast<element_type*>(d_s);
     context.d_cost_row_major_ptr = d_cost;
     context.spmm_alg = select_cuda_spmm_algorithm("CUDA_COST_SPMM_ALG");
+    DEBUG_ONLY(std::cout << "optimization cost spmm backend: "
+                         << (context.use_custom_spmm ? "custom" : "cusparse")
+                         << std::endl);
     DEBUG_ONLY(std::cout << "optimization cost spmm alg: " << context.spmm_alg.name << std::endl);
     DEBUG_ONLY(std::cout << "optimization graph1 mode: "
                          << (context.use_graph1_transpose_view ? "row_major + transpose_view"
                                                                : "col_to_row + direct_row_major_spmm")
                          << std::endl);
+    if (!context.use_graph1_transpose_view) {
+        CHECK_CUDA(CUDA_MALLOC(&context.d_cost_graph1_row_major, context.matrix_size * sizeof(element_type)));
+    }
+    if (context.use_custom_spmm) {
+        return;
+    }
+
     context.intra_dist2_view = create_spmm_matrix_view(d_intra_dist2);
     context.intra_dist1_view = create_spmm_matrix_view(d_intra_dist1);
     context.row_norm_adj2_view = create_spmm_matrix_view(d_row_norm_adj2);
@@ -684,7 +747,6 @@ void initialize_compute_cost_context(ComputeCostContext& context,
     CHECK_CUSPARSE(cusparseCreateDnMat(&context.s_row_major, n2, n1, n1, const_cast<element_type*>(d_s), CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
     CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_row_major, n2, n1, n1, d_cost, CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
     if (!context.use_graph1_transpose_view) {
-        CHECK_CUDA(CUDA_MALLOC(&context.d_cost_graph1_row_major, context.matrix_size * sizeof(element_type)));
         CHECK_CUSPARSE(cusparseCreateDnMat(&context.cost_graph1_row_major, n1, n2, n2, context.d_cost_graph1_row_major, CUDA_R_TYPE, CUSPARSE_ORDER_ROW));
     }
     DEBUG_ONLY(std::cout << "optimization graph1 staging allocation: "
@@ -744,10 +806,6 @@ void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
                                       element_type* d_cost,
                                       element_type* d_buffer,
                                       element_type* d_buffer2) {
-    (void)d_row_norm_adj1;
-    (void)d_row_norm_adj2;
-    (void)d_intra_dist1;
-    (void)d_intra_dist2;
     const element_type alpha_one = static_cast<element_type>(1.0);
     const element_type beta_zero = static_cast<element_type>(0.0);
     const unsigned int blocks = static_cast<unsigned int>((context.matrix_size + kBlockSize - 1) / kBlockSize);
@@ -766,9 +824,13 @@ void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
         CHECK_CUDA(cudaEventCreate(&evt_stop));
     }
 
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, context.intra_dist2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    if (context.use_custom_spmm) {
+        custom_csr_spmm_row_major(d_intra_dist2, context.n1, alpha_one, context.d_s_row_major_ptr, beta_zero, d_cost);
+    } else {
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &alpha_one, context.intra_dist2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                    CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    }
 
     if (!context.use_graph1_transpose_view) {
         if (benchmark) CHECK_CUDA(cudaEventRecord(evt_start));
@@ -789,18 +851,26 @@ void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
     } else if (benchmark) {
         CHECK_CUDA(cudaEventRecord(evt_start));
     }
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, graph1_cost_op,
-                                &context.alpha_neg2_lambda_e, context.intra_dist1_view.descr, graph1_cost_desc, &beta_zero, context.buffer2_row_major,
-                                CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    if (context.use_custom_spmm) {
+        custom_csr_spmm_row_major(d_intra_dist1, context.n2, context.alpha_neg2_lambda_e, context.d_cost_graph1_row_major, beta_zero, d_buffer2);
+    } else {
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, graph1_cost_op,
+                                    &context.alpha_neg2_lambda_e, context.intra_dist1_view.descr, graph1_cost_desc, &beta_zero, context.buffer2_row_major,
+                                    CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    }
     if (benchmark) {
         CHECK_CUDA(cudaEventRecord(evt_stop));
         CHECK_CUDA(cudaEventSynchronize(evt_stop));
         CHECK_CUDA(cudaEventElapsedTime(&spmm2_ms_local, evt_start, evt_stop));
     }
 
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
-                                CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    if (context.use_custom_spmm) {
+        custom_csr_spmm_row_major(d_row_norm_adj2, context.n1, alpha_one, context.d_s_row_major_ptr, beta_zero, d_cost);
+    } else {
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &alpha_one, context.row_norm_adj2_view.descr, context.s_row_major, &beta_zero, context.cost_row_major,
+                                    CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    }
 
     if (!context.use_graph1_transpose_view) {
         if (benchmark) CHECK_CUDA(cudaEventRecord(evt_start));
@@ -823,9 +893,13 @@ void compute_cost_fused_2_cuda_device(cusparseHandle_t sp_handle,
     } else if (benchmark) {
         CHECK_CUDA(cudaEventRecord(evt_start));
     }
-    CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, graph1_cost_op,
-                                &alpha_one, context.row_norm_adj1_view.descr, graph1_cost_desc, &beta_zero, context.buffer_row_major,
-                                CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    if (context.use_custom_spmm) {
+        custom_csr_spmm_row_major(d_row_norm_adj1, context.n2, alpha_one, context.d_cost_graph1_row_major, beta_zero, d_buffer);
+    } else {
+        CHECK_CUSPARSE(cusparseSpMM(sp_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, graph1_cost_op,
+                                    &alpha_one, context.row_norm_adj1_view.descr, graph1_cost_desc, &beta_zero, context.buffer_row_major,
+                                    CUDA_R_TYPE, context.spmm_alg.value, context.d_workspace_shared));
+    }
     if (benchmark) {
         CHECK_CUDA(cudaEventRecord(evt_stop));
         CHECK_CUDA(cudaEventSynchronize(evt_stop));
