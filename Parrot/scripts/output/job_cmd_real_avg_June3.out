@@ -1,0 +1,354 @@
+------ STARTING RUNS FOR GGI ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/cdir-m4293/durga/parrot-data1/GGI
+graph1 #nodes 10403 -- graph2 #nodes 10403 -- directed 1 -- avg nnz1/n1 25 -- avg nnz2/n2  19 -- use node attributes 0 --- # of anchor links(l) 2080
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 19972 ms
+phase timings 
+  row normalizing graphs: 2 ms
+  graph1 RWR: 1797 ms
+  graph2 RWR: 3109 ms
+  cross RWR distance: 292 ms
+  graph1 intra distance: 72 ms
+  graph2 intra distance: 335 ms
+  cross distance propagation: 3432 ms
+  optimization: 10933 ms
+Total time of algorithm including overheads : 20123 ms
+
+hit@ 50 : 0.960111
+hit@ 30 : 0.958068
+hit@ 10 : 0.949718
+hit@ 1 : 0.852097
+mrr : 0.888292
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR GGI ------
+------ STARTING RUNS FOR acm-dbpl ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/cdir-m4293/durga/parrot-data1/acm-dbpl
+graph1 #nodes 9872 -- graph2 #nodes 9916 -- directed 1 -- avg nnz1/n1 16 -- avg nnz2/n2  18 -- use node attributes 1 --- # of anchor links(l) 1265
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 16550 ms
+phase timings 
+  row normalizing graphs: 1 ms
+  graph1 RWR: 1136 ms
+  graph2 RWR: 1694 ms
+  cross RWR distance: 322 ms
+  graph1 intra distance: 1 ms
+  graph2 intra distance: 1 ms
+  cross distance propagation: 3061 ms
+  optimization: 10334 ms
+Total time of algorithm including overheads : 16714 ms
+
+hit@ 50 : 0.977273
+hit@ 30 : 0.970158
+hit@ 10 : 0.94249
+hit@ 1 : 0.685375
+mrr : 0.774822
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR acm-dbpl ------
+------ STARTING RUNS FOR arxiv ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/cdir-m4293/durga/parrot-data1/arxiv
+graph1 #nodes 18772 -- graph2 #nodes 18772 -- directed 1 -- avg nnz1/n1 46 -- avg nnz2/n2  35 -- use node attributes 0 --- # of anchor links(l) 3754
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 67919 ms
+phase timings 
+  row normalizing graphs: 5 ms
+  graph1 RWR: 4587 ms
+  graph2 RWR: 9755 ms
+  cross RWR distance: 1922 ms
+  graph1 intra distance: 571 ms
+  graph2 intra distance: 2203 ms
+  cross distance propagation: 13053 ms
+  optimization: 35823 ms
+Total time of algorithm including overheads : 68342 ms
+
+hit@ 50 : 0.950659
+hit@ 30 : 0.944567
+hit@ 10 : 0.921228
+hit@ 1 : 0.73898
+mrr : 0.804965
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR arxiv ------
+------ STARTING RUNS FOR dbp15k ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/cdir-m4293/durga/parrot-data1/dbp15k
+graph1 #nodes 19661 -- graph2 #nodes 19993 -- directed 1 -- avg nnz1/n1 17 -- avg nnz2/n2  18 -- use node attributes 0 --- # of anchor links(l) 3000
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 68888 ms
+phase timings 
+  row normalizing graphs: 1 ms
+  graph1 RWR: 3706 ms
+  graph2 RWR: 7965 ms
+  cross RWR distance: 1843 ms
+  graph1 intra distance: 1015 ms
+  graph2 intra distance: 2200 ms
+  cross distance propagation: 12988 ms
+  optimization: 39170 ms
+Total time of algorithm including overheads : 69342 ms
+
+hit@ 50 : 0.955333
+hit@ 30 : 0.944042
+hit@ 10 : 0.904458
+hit@ 1 : 0.724625
+mrr : 0.787464
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR dbp15k ------
+------ STARTING RUNS FOR flicker-lastfm ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/cdir-m4293/durga/parrot-data1/flicker-lastfm
+graph1 #nodes 12974 -- graph2 #nodes 15436 -- directed 1 -- avg nnz1/n1 4 -- avg nnz2/n2  4 -- use node attributes 0 --- # of anchor links(l) 90
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 16807 ms
+phase timings 
+  row normalizing graphs: 0 ms
+  graph1 RWR: 143 ms
+  graph2 RWR: 156 ms
+  cross RWR distance: 182 ms
+  graph1 intra distance: 2 ms
+  graph2 intra distance: 2 ms
+  cross distance propagation: 4328 ms
+  optimization: 11994 ms
+Total time of algorithm including overheads : 17052 ms
+
+hit@ 50 : 0.125691
+hit@ 30 : 0.106354
+hit@ 10 : 0.0814917
+hit@ 1 : 0.0248619
+mrr : 0.0446163
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR flicker-lastfm ------
+------ STARTING RUNS FOR twitter-foursquare ------
+RUN 01/11
+RUN 02/11
+RUN 03/11
+RUN 04/11
+RUN 05/11
+RUN 06/11
+RUN 07/11
+RUN 08/11
+RUN 09/11
+RUN 10/11
+RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/cdir-m4293/durga/parrot-data1/twitter-foursquare
+graph1 #nodes 5311 -- graph2 #nodes 5313 -- directed 0 -- avg nnz1/n1 196 -- avg nnz2/n2  81 -- use node attributes 0 --- # of anchor links(l) 642
+
+
+[AVERAGE] {
+total phases of algorithm completed in : 7784 ms
+phase timings 
+  row normalizing graphs: 8 ms
+  graph1 RWR: 930 ms
+  graph2 RWR: 775 ms
+  cross RWR distance: 33 ms
+  graph1 intra distance: 24 ms
+  graph2 intra distance: 12 ms
+  cross distance propagation: 1847 ms
+  optimization: 4155 ms
+Total time of algorithm including overheads : 7829 ms
+
+hit@ 50 : 0.103649
+hit@ 30 : 0.0935559
+hit@ 10 : 0.0621118
+hit@ 1 : 0.021545
+mrr : 0.0372192
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+------ END RUNS FOR twitter-foursquare ------

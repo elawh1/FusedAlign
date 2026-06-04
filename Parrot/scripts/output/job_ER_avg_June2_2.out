@@ -10,8 +10,51 @@ RUN 08/11
 RUN 09/11
 RUN 10/11
 RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets/g40k
+graph1 #nodes 40000 -- graph2 #nodes 40000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 4000
+
 
 [AVERAGE] {
+total phases of algorithm completed in : 226820 ms
+phase timings 
+  row normalizing graphs: 10 ms
+  graph1 RWR: 8761 ms
+  graph2 RWR: 30306 ms
+  cross RWR distance: 9193 ms
+  graph1 intra distance: 1355 ms
+  graph2 intra distance: 5506 ms
+  cross distance propagation: 53083 ms
+  optimization: 118606 ms
+Total time of algorithm including overheads : 228284 ms
+
+hit@ 50 : 0.001
+hit@ 30 : 0.0005625
+hit@ 10 : 0.0001875
+hit@ 1 : 0
+mrr : 0.000239695
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 ------ END RUNS FOR g40k ------
 ------ STARTING RUNS FOR g50k ------
@@ -26,8 +69,51 @@ RUN 08/11
 RUN 09/11
 RUN 10/11
 RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets/g50k
+graph1 #nodes 50000 -- graph2 #nodes 50000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 5000
+
 
 [AVERAGE] {
+total phases of algorithm completed in : 355889 ms
+phase timings 
+  row normalizing graphs: 13 ms
+  graph1 RWR: 10975 ms
+  graph2 RWR: 42844 ms
+  cross RWR distance: 18277 ms
+  graph1 intra distance: 2613 ms
+  graph2 intra distance: 8210 ms
+  cross distance propagation: 82752 ms
+  optimization: 190205 ms
+Total time of algorithm including overheads : 357977 ms
+
+hit@ 50 : 0.0009
+hit@ 30 : 0.00055
+hit@ 10 : 0.0001
+hit@ 1 : 0
+mrr : 0.000188599
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 ------ END RUNS FOR g50k ------
 ------ STARTING RUNS FOR g60k ------
@@ -42,8 +128,51 @@ RUN 08/11
 RUN 09/11
 RUN 10/11
 RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets/g60k
+graph1 #nodes 60000 -- graph2 #nodes 60000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 6000
+
 
 [AVERAGE] {
+total phases of algorithm completed in : 546196 ms
+phase timings 
+  row normalizing graphs: 12 ms
+  graph1 RWR: 15806 ms
+  graph2 RWR: 56418 ms
+  cross RWR distance: 30678 ms
+  graph1 intra distance: 3075 ms
+  graph2 intra distance: 9637 ms
+  cross distance propagation: 119196 ms
+  optimization: 311374 ms
+Total time of algorithm including overheads : 549154 ms
+
+hit@ 50 : 0.000541667
+hit@ 30 : 0.000291667
+hit@ 10 : 4.16667e-05
+hit@ 1 : 0
+mrr : 0.000141078
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 ------ END RUNS FOR g60k ------
 ------ STARTING RUNS FOR g70k ------
@@ -58,8 +187,51 @@ RUN 08/11
 RUN 09/11
 RUN 10/11
 RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets/g70k
+graph1 #nodes 70000 -- graph2 #nodes 70000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 7000
+
 
 [AVERAGE] {
+total phases of algorithm completed in : 701352 ms
+phase timings 
+  row normalizing graphs: 16 ms
+  graph1 RWR: 20536 ms
+  graph2 RWR: 60644 ms
+  cross RWR distance: 48062 ms
+  graph1 intra distance: 4254 ms
+  graph2 intra distance: 6797 ms
+  cross distance propagation: 163376 ms
+  optimization: 397667 ms
+Total time of algorithm including overheads : 705260 ms
+
+hit@ 50 : 0.000571429
+hit@ 30 : 0.000321429
+hit@ 10 : 0.000107143
+hit@ 1 : 3.57143e-05
+mrr : 0.000168666
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 ------ END RUNS FOR g70k ------
 ------ STARTING RUNS FOR g80k ------
@@ -74,8 +246,51 @@ RUN 08/11
 RUN 09/11
 RUN 10/11
 RUN 11/11
+----- Start -----
+MKL threads: 48
+MKL dynamic: 0
+OMP threads: 48
+Dataset path /global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets/g80k
+graph1 #nodes 80000 -- graph2 #nodes 80000 -- directed 1 -- avg nnz1/n1 9 -- avg nnz2/n2  10 -- use node attributes 0 --- # of anchor links(l) 8000
+
 
 [AVERAGE] {
+total phases of algorithm completed in : 860131 ms
+phase timings 
+  row normalizing graphs: 19 ms
+  graph1 RWR: 42004 ms
+  graph2 RWR: 77910 ms
+  cross RWR distance: 72141 ms
+  graph1 intra distance: 5705 ms
+  graph2 intra distance: 9315 ms
+  cross distance propagation: 223439 ms
+  optimization: 429598 ms
+Total time of algorithm including overheads : 865509 ms
+
+hit@ 50 : 0.0006875
+hit@ 30 : 0.000375
+hit@ 10 : 9.375e-05
+hit@ 1 : 0
+mrr : 0.00013688
+----- End -----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 ------ END RUNS FOR g80k ------
 ------ STARTING RUNS FOR g90k ------
@@ -90,7 +305,3 @@ RUN 08/11
 RUN 09/11
 RUN 10/11
 RUN 11/11
-
-[AVERAGE] {
-}
------- END RUNS FOR g90k ------

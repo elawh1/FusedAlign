@@ -1,23 +1,23 @@
 #!/bin/bash
 #SBATCH --qos=regular
 #SBATCH --constraint=cpu
-#SBATCH --job-name=job_real_avg_June2_1
-#SBATCH --output=output/job_real_avg_June2_1.out
-#SBATCH --error=error/job_real_avg_June2_1.err
-#SBATCH --time=00:30:00
+#SBATCH --job-name=job_ER_avg_June4_1
+#SBATCH --output=output/job_ER_avg_June4_1.out
+#SBATCH --error=error/job_ER_avg_June4_1.err
+#SBATCH --time=14:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=48
+#SBATCH --cpus-per-task=128
 
 module load PrgEnv-intel
-export MKL_NUM_THREADS=48 OMP_NUM_THREADS=48 MKL_DYNAMIC=FALSE
 
-DATA_PATH="~/cdir-m4293/durga/parrot-data1"
+export MKL_NUM_THREADS=128 OMP_NUM_THREADS=128 MKL_DYNAMIC=FALSE
+DATA_PATH="/global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets"
 tmpdir="${PARROT_TMPDIR:-/global/homes/d/dmandara/network_alignment/Parrot-Imp/Parrot/scripts/tmp}"
 mkdir -p "$tmpdir"
 script_tag="${SLURM_JOB_NAME:-$(basename "$0" .sh)}_${SLURM_JOB_ID:-$$}"
 
-for DATA in "GGI" "acm-dbpl" "arxiv" "dbp15k" "flicker-lastfm" "twitter-foursquare" ; do
+for DATA in "g10k" "g20k" "g30k" "g40k" "g50k" "g60k" "g70k" "g80k" "g90k"; do
 	cmd="./../parrot $DATA_PATH/$DATA 0"   # replace with your command
 	runs=11
 	run_prefix="$tmpdir/${script_tag}_${DATA}"

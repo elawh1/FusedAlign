@@ -1,26 +1,33 @@
 #!/bin/bash
-#SBATCH --qos=regular
-#SBATCH --constraint=cpu
-#SBATCH --job-name=job_ER_avg_June2_2
-#SBATCH --output=output/job_ER_avg_June2_2.out
-#SBATCH --error=error/job_ER_avg_June2_2.err
-#SBATCH --time=12:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=48
+set -euo pipefail
 
-module load PrgEnv-intel
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+parrot_dir="$(cd "$script_dir/.." && pwd)"
 
-export MKL_NUM_THREADS=48 OMP_NUM_THREADS=48 MKL_DYNAMIC=FALSE
-
-DATA_PATH="/global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets"
-tmpdir="${PARROT_TMPDIR:-/global/homes/d/dmandara/network_alignment/Parrot-Imp/Parrot/scripts/tmp}"
+DATA_PATH="${PARROT_DATA_PATH:-$HOME/cdir-m4293/durga/parrot-data1}"
+cuda_bin="${PARROT_CUDA_BIN:-$parrot_dir/cuda/cuda_alignment}"
+runs="${PARROT_RUNS:-11}"
+tmpdir="${PARROT_TMPDIR:-$script_dir/tmp}"
 mkdir -p "$tmpdir"
 script_tag="${SLURM_JOB_NAME:-$(basename "$0" .sh)}_${SLURM_JOB_ID:-$$}"
+output_dir="${PARROT_OUTPUT_DIR:-$script_dir/output}"
+error_dir="${PARROT_ERROR_DIR:-$script_dir/error}"
+mkdir -p "$output_dir" "$error_dir"
+exec > "$output_dir/${script_tag}.out"
+exec 2> "$error_dir/${script_tag}.err"
 
-for DATA in "g40k" "g50k" "g60k" "g70k" "g80k" "g90k"; do
-	cmd="./../parrot $DATA_PATH/$DATA 0"   # replace with your command
-	runs=11
+if [[ ! -x "$cuda_bin" ]]; then
+	echo "cuda_alignment not found or not executable: $cuda_bin" >&2
+	exit 1
+fi
+if (( runs < 2 )); then
+	echo "PARROT_RUNS must be at least 2 for averaging" >&2
+	exit 1
+fi
+
+datasets="${PARROT_DATASETS:-GGI acm-dbpl arxiv dbp15k flicker-lastfm twitter-foursquare}"
+
+for DATA in $datasets ; do
 	run_prefix="$tmpdir/${script_tag}_${DATA}"
 	trap 'rm -f "$run_prefix"_run_*.txt' EXIT
 
@@ -28,7 +35,7 @@ for DATA in "g40k" "g50k" "g60k" "g70k" "g80k" "g90k"; do
 
 	for i in $(seq -w 1 $runs); do
 	echo "RUN $i/$runs"
-	$cmd > "${run_prefix}_run_$i.txt"
+	"$cuda_bin" "$DATA_PATH/$DATA" 0 > "${run_prefix}_run_$i.txt"
 	done
 
 	awk '
@@ -38,6 +45,11 @@ for DATA in "g40k" "g50k" "g60k" "g70k" "g80k" "g90k"; do
 
 	echo
 	echo "[AVERAGE] {"
+
+	avg_files=()
+	for i in $(seq -w 2 "$runs"); do
+		avg_files+=("${run_prefix}_run_$i.txt")
+	done
 
 	awk '
 	function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
@@ -89,7 +101,7 @@ for DATA in "g40k" "g50k" "g60k" "g70k" "g80k" "g90k"; do
 		}
 		}
 	}
-	' "${run_prefix}"_run_0[2-9].txt "${run_prefix}"_run_1[0-1].txt
+	' "${avg_files[@]}"
 	echo "}"
 	echo "------ END RUNS FOR $DATA ------"
 	rm -f "${run_prefix}"_run_*.txt
