@@ -1,17 +1,19 @@
-parrot.cpp.EMPTY_BACKUP_DEC21
-phone-email.mat
-Makefile_old
-Makefile_april20
-Parrot/parrot
-Parrot/cuda/parrot_cuda
-/Parrot/datasets/
-/experiments/
-/Parrot-Row/
-Parrot/parrotMetis
-Parrot/backup/
-benchmark/benchmark_mkl_spmm
-benchmark/spmm_benchmark_mtx
-benchmark/spmm_scratch
+# compiled binaries 
+**/fastalign
+**/cuda_alignment
+**/cuda_dense_alignment
+**/mkl_dense_alignment
+**/mkl_sparse_alignment
+
+# object files
 *.o
+
+# HPC job logs (not needed for reproducibility)
+FastAlign/scripts/error/
+FastAlign/scripts/output/
+FastAlign/scripts/tmp/
+*.out
+*.err
+
+# misc
 .codex
-Parrot/old_script/

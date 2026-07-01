@@ -1,44 +1,63 @@
-# PARROT-Imp (C++ / CUDA)
+# FastAlign
 
-This repository contains a C++ (and optional CUDA) implementation of **PARROT**
-(Position-Aware Regularized Optimal Transport for Network Alignment), adapted from the original
-Python implementation.
+FastAlign is a scalable, sparsity-aware framework for optimal-transport (OT)-based
+network alignment. It preserves the original OT alignment formulation while
+reinterpreting its computation as a set of recurring sparse-dense operations,
+enabling substantially faster and more memory-efficient alignment on large,
+sparse real-world graphs.
 
-⚠️ **Status:** C++ implementation works and accuracy matches the python version.
+FastAlign achieves comparable alignment accuracy to state-of-the-art OT-based
+methods while running significantly faster — up to ~9x on CPU and ~33x on GPU
+compared to the strongest OT-based baseline.
 
----
+## Requirements
 
-# Datasets for PARROT
+- C++17 compiler (g++)
+- BLAS backend: OpenBLAS or Intel MKL
+- OpenMP
+- CUDA toolkit + cuSPARSE (GPU only)
 
-This directory contains datasets used to run the PARROT graph alignment
-algorithm.
+## Building and Running
 
-Each dataset should be placed in its own subdirectory.
-
----
-
-## Dataset 
-
-Each dataset directory should contain:
-
-- `config.txt` : contains configuration to run parrot for that dataset
-- `graph1.txt` : adjacency matrix of graph 1
-- `graph2.txt` : adjacency matrix of graph 2
-- `anchor_links.txt` : known anchor correspondences
-- `graph1_feat.txt` (optional): node features for graph 1
-- `graph2_feat.txt` (optional): node features for graph 2
-- `test_pairs.txt` : test pairs of nodes
-- `S.txt` : expected result of similarity matrix computed by NA algorithm
-
----
-
-## How to run
+### CPU
 
 ```bash
-cd Parrot
+cd FastAlign
 make
-./parrot [path_to_dataset_directory]
+./fastalign <data_path> <sparsify_flag>
+```
 
-## Example
+### GPU
+
 ```bash
-./parrot ../data/phone-email
+cd FastAlign/cuda
+make
+./cuda_alignment <data_path> <sparsify_flag>
+```
+
+- `data_path` — path to a dataset directory
+- `sparsify_flag` — `1` to enable sparsity-aware optimizations, `0` to disable
+
+### Output
+
+Running FastAlign prints alignment accuracy metrics (Hits@1/10/30/50 and MRR)
+along with a per-phase runtime breakdown to stdout.
+
+## Included Datasets
+
+Real-world and synthetic benchmark datasets are included under `data/` and
+`ER-Graph/`.
+
+## Ablation Studies
+
+`CPP-baseline`, `CUDA-baseline`, `cpp-dense`, `cuda-dense`, `FA-CPP-dense`,
+`FA-CPP-sparsity`, `FA-CPP-fusion-sparsity`, `FA-CUDA-sparsity`,
+`fastalign-cpp-dense`, `fastalign-cpp-sparse` are standalone ablation variants
+used to isolate the contribution of individual optimizations, reported in the
+paper's ablation study. Each builds and runs the same way as above:
+
+```bash
+cd FastAlign/<variant_name>
+make
+./fastalign <data_path> <sparsify_flag>       # or ./cuda_alignment for CUDA variants
+```
