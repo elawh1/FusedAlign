@@ -1,5 +1,0 @@
------ Start -----
-MKL threads: 48
-MKL dynamic: 0
-OMP threads: 48
-Dataset path /global/homes/d/dmandara/network_alignment/Parrot-Imp/ER-Graph/ER-Datasets/g100k
