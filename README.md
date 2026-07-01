@@ -6,10 +6,6 @@ reinterpreting its computation as a set of recurring sparse-dense operations,
 enabling substantially faster and more memory-efficient alignment on large,
 sparse real-world graphs.
 
-FastAlign achieves comparable alignment accuracy to state-of-the-art OT-based
-methods while running significantly faster — up to ~9x on CPU and ~33x on GPU
-compared to the strongest OT-based baseline.
-
 ## Requirements
 
 - C++17 compiler (g++)
