@@ -5,13 +5,13 @@ ifeq ($(DEBUG),1)
 CXXFLAGS += -DDEBUG
 endif
 
-TARGET = fastalign
-SRC = src/fastalign.cpp src/helper.cpp src/helper2.cpp src/fused_spmm.cpp src/accuracy.cpp
-HDR = include/helper.h include/helper2.h include/fused_spmm.h include/accuracy.h include/debug_log.h
+TARGET = fusedalign
+SRC = src/fusedalign.cpp
+HDR =
 
 # ---- MKL ----
 ifndef MKLROOT
-$(error MKLROOT must be set for the MKL implementation)
+$(error MKLROOT must be set for the MKL dense implementation)
 endif
 
 CXXFLAGS += -march=native -fopenmp -DMKL_AVAILABLE -DMKL_ILP64 -I$(MKLROOT)/include

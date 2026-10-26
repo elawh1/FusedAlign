@@ -17,7 +17,7 @@
 #include "helper.h"
 #include "helper2.h"
 
-constexpr bool kUseFloat = true;
+constexpr bool kUseFloat = false;
 using Real = std::conditional_t<kUseFloat, float, double>;
 
 int main(int argc, char* argv[]){ 

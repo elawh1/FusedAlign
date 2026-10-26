@@ -1,5 +1,5 @@
 # compiled binaries 
-**/fastalign
+**/fusedalign
 **/cuda_alignment
 **/cuda_dense_alignment
 **/mkl_dense_alignment
@@ -9,9 +9,9 @@
 *.o
 
 # HPC job logs (not needed for reproducibility)
-FastAlign/scripts/error/
-FastAlign/scripts/output/
-FastAlign/scripts/tmp/
+FusedAlign/scripts/error/
+FusedAlign/scripts/output/
+FusedAlign/scripts/tmp/
 *.out
 *.err
 

@@ -1,10 +1,6 @@
-# FastAlign
+# FusedAlign
 
-FastAlign is a scalable, sparsity-aware framework for optimal-transport (OT)-based
-network alignment. It preserves the original OT alignment formulation while
-reinterpreting its computation as a set of recurring sparse-dense operations,
-enabling substantially faster and more memory-efficient alignment on large,
-sparse real-world graphs.
+FusedAlign is a scalable, sparsity-aware framework for optimal-transport-based network alignment. It accelerates alignment through fused sparse–dense computations, reduced intermediate data movement, and optimized CPU and GPU execution.
 
 ## Requirements
 
@@ -18,15 +14,15 @@ sparse real-world graphs.
 ### CPU
 
 ```bash
-cd FastAlign
+cd FusedAlign
 make
-./fastalign <data_path> <sparsify_flag>
+./fusedalign <data_path> <sparsify_flag>
 ```
 
 ### GPU
 
 ```bash
-cd FastAlign/cuda
+cd FusedAlign/cuda
 make
 ./cuda_alignment <data_path> <sparsify_flag>
 ```
@@ -36,7 +32,7 @@ make
 
 ### Output
 
-Running FastAlign prints alignment accuracy metrics (Hits@1/10/30/50 and MRR)
+Running FusedAlign prints alignment accuracy metrics (Hits@1/10/30/50 and MRR)
 along with a per-phase runtime breakdown to stdout.
 
 ## Included Datasets
@@ -48,12 +44,12 @@ Real-world and synthetic benchmark datasets are included under `data/` and
 
 `CPP-baseline`, `CUDA-baseline`, `cpp-dense`, `cuda-dense`, `FA-CPP-dense`,
 `FA-CPP-sparsity`, `FA-CPP-fusion-sparsity`, `FA-CUDA-sparsity`,
-`fastalign-cpp-dense`, `fastalign-cpp-sparse` are standalone ablation variants
+`fusedalign-cpp-dense`, `fusedalign-cpp-sparse` are standalone ablation variants
 used to isolate the contribution of individual optimizations, reported in the
 paper's ablation study. Each builds and runs the same way as above:
 
 ```bash
-cd FastAlign/<variant_name>
+cd FusedAlign/<variant_name>
 make
-./fastalign <data_path> <sparsify_flag>       # or ./cuda_alignment for CUDA variants
+./fusedalign <data_path> <sparsify_flag>       # or ./cuda_alignment for CUDA variants
 ```
